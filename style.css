@@ -1,0 +1,292 @@
+/*
+ * Design tokens — based on DESIGN.md (Anthropic-inspired warm palette).
+ *
+ * Rule: NEVER hardcode colors in rules below — always reference a var(--token).
+ * If you need a new color, add a CSS variable here (in BOTH themes if applicable)
+ * and use it. All neutrals MUST be warm-toned — no cool blue-grays anywhere.
+ *
+ * Note: this app's dominant surface at runtime is the live camera feed, so the
+ * parchment background is only visible on initial load / setup and behind the
+ * controls panel. HUD overlays adopt the warm palette via translucent Ivory
+ * pills so the camera shows through while the typography stays on-brand.
+ */
+
+:root {
+  /* === Brand & accents === */
+  --terracotta: #c96442;         /* Primary CTA, highest-signal brand moment */
+  --terracotta-hover: #b8593a;
+  --coral: #d97757;              /* Secondary accent on dark surfaces */
+
+  --focus: #3898ec;              /* The only cool color in the system — focus ring only */
+  --error: #b53333;              /* Warm-toned error */
+
+  /* === Surfaces (light theme) === */
+  --parchment: #f5f4ed;          /* Primary page background — the emotional foundation */
+  --ivory: #faf9f5;              /* Elevated cards on parchment */
+  --white: #ffffff;              /* Max contrast surfaces only */
+  --warm-sand: #e8e6dc;          /* Button backgrounds, prominent interactives */
+  --dark-surface: #30302e;       /* Dark-theme containers */
+  --deep-dark: #141413;          /* Dark-theme background, primary dark text */
+
+  /* === Text (warm neutrals only) === */
+  --fg: #141413;                 /* Primary (Anthropic Near Black) */
+  --fg-strong: #3d3d3a;          /* Emphasized secondary */
+  --fg-button: #4d4c48;          /* Button text on light warm surfaces */
+  --fg-2: #5e5d59;               /* Secondary body (Olive Gray) */
+  --fg-3: #87867f;               /* Tertiary metadata (Stone Gray) */
+  --fg-on-dark: #b0aea5;         /* Warm silver — text on dark surfaces */
+
+  /* === Borders === */
+  --border-cream: #f0eee6;       /* Standard light border — barely visible */
+  --border-warm: #e8e6dc;        /* Prominent borders, dividers */
+  --border-dark: #30302e;        /* Borders on dark surfaces */
+
+  /* === Ring-shadow colors (signature depth system) === */
+  --ring-warm: #d1cfc5;          /* Button hover/focus ring */
+  --ring-deep: #c2c0b6;          /* Active/pressed ring */
+
+  /* === Status colors (semantic, kept warm where possible) === */
+  --status-idle: #87867f;        /* Stone Gray */
+  --status-waiting: #c96442;     /* Terracotta — armed, awaiting trigger */
+  --status-running: #4d4c48;     /* Charcoal warm — subdued during run */
+  --status-finished: #3898ec;    /* Focus blue — the one permitted cool moment */
+
+  /* === Shadows === */
+  --shadow-whisper: rgba(0, 0, 0, 0.05) 0px 4px 24px;
+  --shadow-hud: 0 2px 12px rgba(20, 20, 19, 0.45);
+
+  /* === Radii (per DESIGN.md scale) === */
+  --radius-sm: 8px;              /* Comfortably rounded — standard buttons/cards */
+  --radius-md: 12px;             /* Generously rounded — primary buttons, inputs, nav */
+  --radius-lg: 16px;             /* Very rounded — featured containers */
+  --radius-xl: 32px;             /* Maximum — hero containers, embedded media */
+
+  /* === Fonts === */
+  --font-serif: "Anthropic Serif", Georgia, "Iowan Old Style", serif;
+  --font-sans: "Anthropic Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Anthropic Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+[data-theme="dark"] {
+  /* Dark theme still warm — same palette, different elevation mapping. */
+  --parchment: #141413;
+  --ivory: #30302e;
+  --white: #30302e;
+  --warm-sand: #30302e;
+
+  --fg: #faf9f5;
+  --fg-strong: #f0eee6;
+  --fg-button: #b0aea5;
+  --fg-2: #b0aea5;
+  --fg-3: #87867f;
+
+  --border-cream: #30302e;
+  --border-warm: #3d3d3a;
+
+  --ring-warm: #3d3d3a;
+  --ring-deep: #4d4c48;
+
+  --shadow-whisper: rgba(0, 0, 0, 0.25) 0px 4px 24px;
+  --shadow-hud: 0 2px 12px rgba(0, 0, 0, 0.75);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--parchment);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.6;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+}
+
+#stage {
+  position: fixed;
+  inset: 0;
+  display: block;
+  background: var(--parchment);
+}
+
+#cam,
+#overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+#overlay {
+  pointer-events: none;
+}
+
+#hud {
+  position: absolute;
+  top: env(safe-area-inset-top, 16px);
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+  padding: 0 16px;
+}
+
+/* Timer — serif, book-title gravitas, Ivory pill over the camera feed. */
+.timer {
+  font-family: var(--font-serif);
+  font-weight: 500;
+  font-size: clamp(56px, 14vw, 160px);
+  line-height: 1.1;
+  letter-spacing: normal;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+  background: rgba(250, 249, 245, 0.92);       /* Ivory with slight transparency */
+  padding: 4px 28px;
+  border-radius: var(--radius-lg);
+  box-shadow: 0 0 0 1px var(--ring-warm), var(--shadow-whisper);
+}
+
+/* Status — small sans overline, uppercase, subtle. */
+.status {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.6;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--fg-on-dark);
+  background: rgba(20, 20, 19, 0.55);
+  padding: 6px 12px;
+  border-radius: var(--radius-md);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.status[data-status="WAITING_START"] { color: var(--terracotta); }
+.status[data-status="RUNNING"]       { color: var(--fg-on-dark); }
+.status[data-status="FINISHED"]      { color: var(--focus); }
+
+/* Debug — mono, caption size. */
+.debug {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  letter-spacing: -0.32px;
+  color: var(--fg-on-dark);
+  background: rgba(20, 20, 19, 0.7);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+/* Controls panel — sits at the bottom over the camera feed, parchment-tinted
+   so the palette stays consistent even though the camera is the background. */
+.controls {
+  position: absolute;
+  bottom: env(safe-area-inset-bottom, 16px);
+  left: 16px;
+  right: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  background: rgba(245, 244, 237, 0.88);       /* Parchment with slight transparency */
+  border-radius: var(--radius-lg);
+  box-shadow: 0 0 0 1px var(--border-warm), var(--shadow-whisper);
+}
+
+/* Default button — Warm Sand secondary per DESIGN.md. */
+.controls button {
+  font-family: var(--font-sans);
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.25;
+  padding: 8px 16px;
+  color: var(--fg-button);
+  background: var(--warm-sand);
+  border: 0;
+  border-radius: var(--radius-sm);
+  box-shadow: 0 0 0 1px var(--ring-warm);
+  cursor: pointer;
+  transition: box-shadow 120ms ease, background 120ms ease;
+}
+
+.controls button:not(:disabled):hover {
+  box-shadow: 0 0 0 1px var(--ring-deep);
+  background: var(--ivory);
+}
+
+.controls button:not(:disabled):active {
+  box-shadow: inset 0 0 0 1px rgba(20, 20, 19, 0.15);
+}
+
+.controls button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Primary CTA — Brand Terracotta. Used for the Arm action. */
+.controls button.primary {
+  background: var(--terracotta);
+  color: var(--ivory);
+  border-radius: var(--radius-md);
+  box-shadow: 0 0 0 1px var(--terracotta);
+}
+
+.controls button.primary:not(:disabled):hover {
+  background: var(--terracotta-hover);
+  box-shadow: 0 0 0 1px var(--terracotta-hover);
+}
+
+/* Form labels — sans caption size with warm body text. */
+.threshold,
+.debug-toggle,
+.lang-select {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.43;
+  color: var(--fg-2);
+}
+
+.threshold input[type="range"] {
+  accent-color: var(--terracotta);
+}
+
+.lang-select select {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  color: var(--fg);
+  background: var(--ivory);
+  border: 0;
+  border-radius: var(--radius-sm);
+  box-shadow: 0 0 0 1px var(--border-warm);
+  padding: 4px 8px;
+}
+
+.lang-select select:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--focus);
+}
+
+/* Debug-toggle checkbox — keep native but tint the check. */
+.debug-toggle input[type="checkbox"] {
+  accent-color: var(--terracotta);
+}

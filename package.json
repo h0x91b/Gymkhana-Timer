@@ -1,0 +1,14 @@
+{
+  "name": "gymkhana-timer",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Motion-triggered PWA lap timer for motorcycle gymkhana practice.",
+  "type": "module",
+  "scripts": {
+    "start": "bun run scripts/dev-server.ts",
+    "dev": "bun run scripts/dev-server.ts"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  }
+}
