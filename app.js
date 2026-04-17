@@ -164,7 +164,7 @@ function onFrame(frame, metadata) {
   if (state === STATE.RUNNING) {
     const elapsed = metadata.mediaTime - t0;
     timer.stop(elapsed);
-    timer.speak(t('voice.finish', { seconds: elapsed.toFixed(1) }));
+    timer.speak(t('voice.finish', { seconds: elapsed.toFixed(2) }));
     storage.save({ elapsed, startedAt, finishedAt: Date.now() });
     setState(STATE.FINISHED);
   }
