@@ -10,5 +10,8 @@
   },
   "engines": {
     "bun": ">=1.1.0"
+  },
+  "devDependencies": {
+    "qrcode-terminal": "^0.12.0"
   }
 }

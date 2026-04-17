@@ -1,0 +1,15 @@
+{
+  "setupScript": "bun install",
+  "devScript": "PORT=${DEV3_PORT0:-8080} bun run dev",
+  "clonePaths": ["node_modules"],
+  "portCount": 1,
+  "defaultBaseBranch": "master",
+  "defaultCompareRef": "master",
+  "builtinColumnAgents": {
+    "review-by-ai": {
+      "agentId": "builtin-claude",
+      "configId": "claude-bypass-sonnet",
+      "prompt": ""
+    }
+  }
+}

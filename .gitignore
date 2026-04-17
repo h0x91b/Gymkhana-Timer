@@ -5,3 +5,6 @@ dist/
 *.log
 bun.lock
 bun.lockb
+
+# dev-3.0 local config
+.dev3/config.local.json

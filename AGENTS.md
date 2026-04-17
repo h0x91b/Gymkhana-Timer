@@ -111,18 +111,27 @@ State machine lives in `app.js`. The detector is stateless w.r.t. the run — it
 
 ## Local development
 
-Runtime for tooling is **Bun** (`>=1.1.0`). The shipped app has zero runtime deps — the only thing Bun does here is execute the local dev server script.
+Runtime for tooling is **Bun** (`>=1.1.0`). The shipped app has zero runtime deps. `qrcode-terminal` is a **dev-only** dependency used by the dev server to draw a QR code in the terminal; it never reaches the shipped bundle.
 
 ```bash
-bun run start           # static server on http://localhost:8080
+bun install             # first-time only — installs the dev deps
+bun run start           # static server on http://localhost:8080 + cloudflared tunnel + QR
 PORT=3000 bun run start # override port
+TUNNEL=0 bun run start  # skip the cloudflared tunnel (local-only)
 ```
 
-`bun run dev` is an alias for `bun run start`. The server script is [`scripts/dev-server.ts`](./scripts/dev-server.ts) — a ~80-line `Bun.serve`-based static server with zero dependencies. It serves files from the repo root, disables caching (so the service worker and source files always refresh), rejects path-traversal attempts, and prints LAN addresses on startup.
+`bun run dev` is an alias for `bun run start`. The server script is [`scripts/dev-server.ts`](./scripts/dev-server.ts) — a `Bun.serve`-based static server. It serves files from the repo root, disables caching (so the service worker and source files always refresh), rejects path-traversal attempts, and prints LAN addresses on startup.
 
 ### Camera on a phone
 
-`getUserMedia` and service workers require **HTTPS off `localhost`**. The dev server is plain HTTP, so LAN access works for the UI but **not** the camera. For real phone testing, tunnel through `cloudflared` / `ngrok`, or deploy the repo root to a static host.
+`getUserMedia` and service workers require **HTTPS off `localhost`**. The dev server solves this automatically: on every start, it spawns a [`cloudflared`](https://github.com/cloudflare/cloudflared) quick tunnel (`cloudflared tunnel --url http://localhost:$PORT`) and prints the resulting `https://*.trycloudflare.com` URL **plus a QR code** in the terminal. Scan with a phone camera and you're testing over HTTPS in one step — camera + service worker both work.
+
+- Install: `brew install cloudflared` (macOS) / see upstream docs for other platforms.
+- Disable for offline / local-only work: `TUNNEL=0 bun run dev`.
+- If `cloudflared` is missing, the tunnel is silently skipped and the local server keeps working.
+- Each run gets a fresh subdomain — don't bookmark it, just scan the new QR each time.
+
+Rationale and alternatives considered: [`decisions/002-dev-server-cloudflared-tunnel.md`](./decisions/002-dev-server-cloudflared-tunnel.md).
 
 ## Git
 
