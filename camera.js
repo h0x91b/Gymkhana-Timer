@@ -34,6 +34,37 @@ export class Camera {
     }
   }
 
+  // Returns {min, max, step, current} if the device/browser supports hardware zoom
+  // via MediaStreamTrack capabilities, otherwise null. This is Chrome/Android's
+  // native optical-or-digital camera zoom — transparent to detection, because
+  // the frames we receive are already zoomed at capture time.
+  getZoomCapabilities() {
+    const track = this.stream?.getVideoTracks?.()[0];
+    if (!track || typeof track.getCapabilities !== 'function') return null;
+    const caps = track.getCapabilities();
+    if (!caps.zoom) return null;
+    const settings = typeof track.getSettings === 'function' ? track.getSettings() : {};
+    return {
+      min: caps.zoom.min,
+      max: caps.zoom.max,
+      step: caps.zoom.step ?? 0.1,
+      current: settings.zoom ?? caps.zoom.min,
+    };
+  }
+
+  // Apply a zoom factor. Resolves true on success, false if unsupported or rejected.
+  async setZoom(value) {
+    const track = this.stream?.getVideoTracks?.()[0];
+    if (!track || typeof track.applyConstraints !== 'function') return false;
+    try {
+      await track.applyConstraints({ advanced: [{ zoom: value }] });
+      return true;
+    } catch (err) {
+      console.warn('Zoom apply failed:', err);
+      return false;
+    }
+  }
+
   // cb(video, metadata) where metadata.mediaTime is a seconds-precise frame timestamp.
   onFrame(cb) {
     if (!('requestVideoFrameCallback' in HTMLVideoElement.prototype)) {

@@ -38,12 +38,14 @@ const els = {
   btnStartCamera: document.getElementById('btn-start-camera'),
   btnSetRoi: document.getElementById('btn-set-roi'),
   btnArm: document.getElementById('btn-arm'),
-  btnReset: document.getElementById('btn-reset'),
   btnUpdate: document.getElementById('btn-update'),
   versionBadge: document.getElementById('version-badge'),
   threshold: document.getElementById('threshold'),
   debugToggle: document.getElementById('debug-toggle'),
   langSelect: document.getElementById('lang-select'),
+  zoomControl: document.getElementById('zoom-control'),
+  zoom: document.getElementById('zoom'),
+  zoomValue: document.getElementById('zoom-value'),
 };
 
 const roiViewCtx = els.roiView.getContext('2d');
@@ -110,6 +112,10 @@ function applyTranslations() {
   }
   // Status element has a dynamic key — re-resolve from its current data-status.
   els.status.textContent = t(statusKey(els.status.dataset.status));
+  // The Arm button label is state-dependent (Arm / Cancel / New run) and is
+  // kept in sync via its own data-i18n-key; re-render it explicitly so a
+  // language switch mid-state picks up the right translation.
+  refreshArmButton();
   // FPS readout uses interpolation — re-render with the last measured values.
   if (!els.fpsReadout.hidden) {
     els.fpsReadout.textContent = t('ui.fpsReadout', {
@@ -142,6 +148,39 @@ function setState(next) {
   state = next;
   els.status.dataset.status = next;
   els.status.textContent = t(statusKey(next));
+  refreshArmButton();
+}
+
+// The Arm button is the only lifecycle control in the bottom row — it changes
+// label and behavior per state so we don't need a separate Reset button:
+//   IDLE          → "Arm"        — enabled when a ROI has been set. Starts a run.
+//   WAITING_START → "Cancel"     — always enabled. Aborts the arm, back to IDLE.
+//   RUNNING       → "Arm"        — disabled. Can't touch mid-run.
+//   FINISHED      → "New run"    — enabled. Re-arms instantly (same ROI, fresh ref).
+function refreshArmButton() {
+  const btn = els.btnArm;
+  let key;
+  let enabled;
+  let primary = true;
+  if (state === STATE.WAITING_START) {
+    key = 'ui.cancel';
+    enabled = true;
+  } else if (state === STATE.RUNNING) {
+    key = 'ui.arm';
+    enabled = false;
+  } else if (state === STATE.FINISHED) {
+    key = 'ui.newRun';
+    enabled = true;
+  } else {
+    // IDLE
+    key = 'ui.arm';
+    // Enabled iff a ROI has been captured by the detector.
+    enabled = Boolean(currentRoi);
+  }
+  btn.dataset.i18nKey = key;
+  btn.textContent = t(key);
+  btn.disabled = !enabled;
+  btn.classList.toggle('primary', primary);
 }
 
 async function requestWakeLock() {
@@ -196,14 +235,16 @@ function clearOverlay() {
 
 function activateRoiView(roi) {
   currentRoi = roi;
-  const stage = document.getElementById('stage');
-  const stageRect = stage.getBoundingClientRect();
-  // Match canvas pixel buffer to its CSS size for a crisp render.
-  els.roiView.width = Math.max(1, Math.round(stageRect.width * devicePixelRatio));
-  els.roiView.height = Math.max(1, Math.round(stageRect.height * devicePixelRatio));
   els.roiView.hidden = false;
   document.body.dataset.roiActive = 'true';
   clearOverlay();
+  // The layout flip (ROI pill shrinks to the corner, timer grows to hero size)
+  // is CSS-driven and animates over ~220ms. The canvas pixel buffer must match
+  // its *final* CSS box so the ROI crop renders sharp. We resize once now
+  // (so it doesn't render at stage-size for one frame), then again after the
+  // transition completes to pick up the shrunken size.
+  resizeRoiViewCanvas();
+  setTimeout(resizeRoiViewCanvas, 260);
 }
 
 function deactivateRoiView() {
@@ -212,6 +253,21 @@ function deactivateRoiView() {
   document.body.dataset.roiActive = 'false';
   roiViewCtx.clearRect(0, 0, els.roiView.width, els.roiView.height);
 }
+
+// Sync the ROI-view canvas pixel buffer to its current CSS bounding box.
+// Called after ROI activation, after the CSS transition settles, and on
+// viewport resize / orientation change.
+function resizeRoiViewCanvas() {
+  if (els.roiView.hidden) return;
+  const rect = els.roiView.getBoundingClientRect();
+  const w = Math.max(1, Math.round(rect.width * devicePixelRatio));
+  const h = Math.max(1, Math.round(rect.height * devicePixelRatio));
+  if (els.roiView.width !== w) els.roiView.width = w;
+  if (els.roiView.height !== h) els.roiView.height = h;
+}
+
+window.addEventListener('resize', resizeRoiViewCanvas);
+window.addEventListener('orientationchange', resizeRoiViewCanvas);
 
 /**
  * Show/hide the cooldown pill and update its countdown + progress bar.
@@ -298,29 +354,65 @@ els.btnStartCamera.addEventListener('click', async () => {
   camera.onFrame(onFrame);
   els.btnStartCamera.disabled = true;
   els.btnSetRoi.disabled = false;
+  setupZoomControl();
 });
 
 els.btnSetRoi.addEventListener('click', async () => {
   // Re-show the full camera so the user can see what they're selecting.
+  // Clear ROI first so refreshArmButton sees no ROI when state flips to IDLE.
   deactivateRoiView();
+  // If a run was mid-flight, cancel it first — picking a new ROI restarts
+  // the workflow cleanly.
+  if (state !== STATE.IDLE) {
+    timer.reset();
+    setState(STATE.IDLE);
+  } else {
+    refreshArmButton();
+  }
+  // Zoom control is re-shown via the CSS selector (body no longer has
+  // data-roi-active="true"), so the user can re-frame before tapping.
   const cssRoi = await roiPicker.pick();
   const videoRoi = mapCssRoiToVideoRoi(cssRoi, els.video, els.overlay);
   detector.setRoi(videoRoi);
   activateRoiView(videoRoi);
-  els.btnArm.disabled = false;
+  refreshArmButton();
 });
 
+// Single Arm button that means different things per state.
 els.btnArm.addEventListener('click', () => {
+  if (state === STATE.WAITING_START) {
+    // Cancel a pending arm — go back to IDLE, ROI stays captured.
+    timer.reset();
+    setState(STATE.IDLE);
+    return;
+  }
+  // IDLE or FINISHED → arm a new run. Re-capture reference so ambient-light
+  // drift between runs doesn't poison the diff.
   detector.captureReference();
   detector.setThreshold(parseFloat(els.threshold.value));
   timer.reset();
   setState(STATE.WAITING_START);
-  els.btnReset.disabled = false;
 });
 
-els.btnReset.addEventListener('click', () => {
-  timer.reset();
-  setState(STATE.IDLE);
+function setupZoomControl() {
+  const caps = camera.getZoomCapabilities();
+  if (!caps) {
+    // Device/browser doesn't expose hardware zoom — leave the slider hidden.
+    els.zoomControl.hidden = true;
+    return;
+  }
+  els.zoom.min = String(caps.min);
+  els.zoom.max = String(caps.max);
+  els.zoom.step = String(caps.step);
+  els.zoom.value = String(caps.current);
+  els.zoomValue.textContent = `${Number(caps.current).toFixed(1)}×`;
+  els.zoomControl.hidden = false;
+}
+
+els.zoom.addEventListener('input', () => {
+  const value = parseFloat(els.zoom.value);
+  els.zoomValue.textContent = `${value.toFixed(1)}×`;
+  camera.setZoom(value);
 });
 
 els.threshold.addEventListener('input', () => {

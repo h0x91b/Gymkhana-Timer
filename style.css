@@ -136,10 +136,27 @@ body {
    <video> element alive so requestVideoFrameCallback keeps firing. */
 #roi-view {
   background: var(--deep-dark);
+  transition: inset 220ms ease, width 220ms ease, height 220ms ease,
+              border-radius 220ms ease, box-shadow 220ms ease;
 }
 
 body[data-roi-active="true"] #cam {
   visibility: hidden;
+}
+
+/* Once a ROI is locked in, the timer is the main event. The ROI crop
+   shrinks to a small pill in the top-right corner — large enough to
+   verify that the detector is still watching the right spot, small
+   enough not to compete with the numbers. */
+body[data-roi-active="true"] #roi-view {
+  inset: auto;
+  top: calc(env(safe-area-inset-top, 0px) + 16px);
+  right: 16px;
+  width: min(38vw, 240px);
+  height: min(22vh, 160px);
+  border-radius: var(--radius-md);
+  box-shadow: 0 0 0 1px var(--ring-warm), var(--shadow-whisper);
+  object-fit: initial;
 }
 
 #hud {
@@ -155,6 +172,16 @@ body[data-roi-active="true"] #cam {
   padding: 0 16px;
 }
 
+/* When a ROI is set, the HUD is re-purposed as a hero surface for the
+   timer: it fills the screen above the controls and centers everything.
+   The ROI preview is a small pill in the corner, so the center stage
+   is owned by the numbers. */
+body[data-roi-active="true"] #hud {
+  bottom: calc(env(safe-area-inset-bottom, 16px) + 88px);
+  justify-content: center;
+  gap: 16px;
+}
+
 /* Timer — serif, book-title gravitas, Ivory pill over the camera feed. */
 .timer {
   font-family: var(--font-serif);
@@ -168,6 +195,14 @@ body[data-roi-active="true"] #cam {
   padding: 4px 28px;
   border-radius: var(--radius-lg);
   box-shadow: 0 0 0 1px var(--ring-warm), var(--shadow-whisper);
+  transition: font-size 220ms ease, padding 220ms ease;
+}
+
+/* Hero-sized timer once a ROI is active — the number becomes the page. */
+body[data-roi-active="true"] .timer {
+  font-size: clamp(120px, 36vw, 420px);
+  padding: 12px 40px;
+  border-radius: var(--radius-xl);
 }
 
 /* Status — small sans overline, uppercase, subtle. */
@@ -399,4 +434,57 @@ body[data-roi-active="true"] #cam {
 /* Debug-toggle checkbox — keep native but tint the check. */
 .debug-toggle input[type="checkbox"] {
   accent-color: var(--terracotta);
+}
+
+/* Zoom control — sits just above the controls panel so it's visible
+   while the rider is framing the start/finish line. Only surfaced when
+   the active video track exposes a zoom capability (Chrome on Android).
+   Hidden once a ROI is locked in, because the shrunken preview doesn't
+   benefit from further zoom — re-press "Set ROI" to bring it back. */
+.zoom-control {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: calc(env(safe-area-inset-bottom, 16px) + 92px);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: rgba(250, 249, 245, 0.92);
+  border-radius: var(--radius-md);
+  box-shadow: 0 0 0 1px var(--ring-warm), var(--shadow-whisper);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--fg-2);
+}
+
+.zoom-control .zoom-label {
+  flex-shrink: 0;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fg-strong);
+}
+
+.zoom-control input[type="range"] {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--terracotta);
+}
+
+.zoom-control .zoom-value {
+  flex-shrink: 0;
+  min-width: 3.2em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg);
+}
+
+/* Hide zoom once ROI is locked — the tiny preview doesn't need it. */
+body[data-roi-active="true"] .zoom-control {
+  display: none;
 }
