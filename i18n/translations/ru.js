@@ -14,6 +14,7 @@ export default {
   'ui.debug': 'Отладка',
   'ui.language': 'Язык',
   'ui.fpsReadout': '{fps} FPS · ±{ms} мс',
+  'ui.cooldown': 'Ожидание {seconds}с',
 
   'voice.start': 'Старт',
   // Fractional seconds always take "секунды" in Russian speech, so no plural split here.

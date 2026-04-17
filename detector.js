@@ -4,7 +4,7 @@
 // - process(video, metadata) returns true iff motion crossed threshold (respects cooldown)
 
 const REFERENCE_FRAMES = 5;
-const COOLDOWN_SECONDS = 1.2;
+const COOLDOWN_SECONDS = 3;
 const DOWNSCALE_MAX = 240;
 
 export class Detector {
@@ -17,9 +17,10 @@ export class Detector {
     this._refAccum = null;
     this._refCount = 0;
 
-    this.threshold = 0.15;
+    this.threshold = 0.30;
     this.pixelDiffThreshold = 28; // per-channel delta to count as motion
     this._lastTriggerAt = -Infinity;
+    this.cooldownSeconds = COOLDOWN_SECONDS;
     this._lastRatio = 0;
     this._scale = 1;
     this._downW = 0;
@@ -99,6 +100,12 @@ export class Detector {
 
     this._lastTriggerAt = metadata.mediaTime;
     return true;
+  }
+
+  // Seconds remaining in the post-trigger debounce window, or 0 if past it.
+  // Pure read — does not mutate state. For UI feedback only.
+  cooldownRemaining(mediaTime) {
+    return Math.max(0, COOLDOWN_SECONDS - (mediaTime - this._lastTriggerAt));
   }
 
   debugLine() {

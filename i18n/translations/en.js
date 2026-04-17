@@ -17,6 +17,8 @@ export default {
   // {fps} is the measured frame rate (integer), {ms} is half the frame interval,
   // i.e. the per-event timing uncertainty of motion detection.
   'ui.fpsReadout': '{fps} FPS · ±{ms} ms',
+  // Debounce window active after a trigger; {seconds} counts down to 0.0.
+  'ui.cooldown': 'Wait {seconds}s',
 
   'voice.start': 'Start',
   'voice.finish': 'Finish. {seconds} seconds',

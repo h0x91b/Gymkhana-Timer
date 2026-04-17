@@ -26,9 +26,13 @@ const STATE = Object.freeze({
 const els = {
   video: document.getElementById('cam'),
   overlay: document.getElementById('overlay'),
+  roiView: document.getElementById('roi-view'),
   timer: document.getElementById('timer'),
   status: document.getElementById('status'),
   fpsReadout: document.getElementById('fps-readout'),
+  cooldown: document.getElementById('cooldown'),
+  cooldownText: document.getElementById('cooldown-text'),
+  cooldownFill: document.getElementById('cooldown-fill'),
   debug: document.getElementById('debug'),
   btnStartCamera: document.getElementById('btn-start-camera'),
   btnSetRoi: document.getElementById('btn-set-roi'),
@@ -38,6 +42,9 @@ const els = {
   debugToggle: document.getElementById('debug-toggle'),
   langSelect: document.getElementById('lang-select'),
 };
+
+const roiViewCtx = els.roiView.getContext('2d');
+let currentRoi = null; // video-intrinsic coordinates
 
 const camera = new Camera(els.video);
 const detector = new Detector();
@@ -107,6 +114,13 @@ function applyTranslations() {
       ms: fpsLastPrecisionMs,
     });
   }
+  // Cooldown text also uses interpolation; render a zero-state placeholder
+  // so the label is already localized before the first countdown frame.
+  // While the cooldown is actively counting down, the next onFrame will
+  // overwrite this within one frame, so no visible flicker.
+  if (els.cooldown.hidden) {
+    els.cooldownText.textContent = t('ui.cooldown', { seconds: '0.0' });
+  }
   document.documentElement.lang = getLocale();
 }
 
@@ -136,11 +150,116 @@ async function requestWakeLock() {
   }
 }
 
+/**
+ * Convert a rectangle picked on the overlay (CSS pixels of the overlay element)
+ * to the video's intrinsic pixel coordinate system, which is what drawImage's
+ * source-rect arguments expect.
+ *
+ * The overlay covers the stage; the <video> uses object-fit: cover, so the
+ * intrinsic video content is scaled by s = max(W/Vw, H/Vh) and centered.
+ * Anything outside the visible sub-rectangle is cropped by object-fit.
+ */
+function mapCssRoiToVideoRoi(cssRoi, video, overlay) {
+  const rect = overlay.getBoundingClientRect();
+  const W = rect.width;
+  const H = rect.height;
+  const Vw = video.videoWidth;
+  const Vh = video.videoHeight;
+  if (!Vw || !Vh) return cssRoi; // video not ready — unlikely, guard anyway
+
+  const s = Math.max(W / Vw, H / Vh);
+  const scaledW = Vw * s;
+  const scaledH = Vh * s;
+  const offsetX = (W - scaledW) / 2;
+  const offsetY = (H - scaledH) / 2;
+
+  const rawX = (cssRoi.x - offsetX) / s;
+  const rawY = (cssRoi.y - offsetY) / s;
+  const rawW = cssRoi.w / s;
+  const rawH = cssRoi.h / s;
+
+  // Clamp into the intrinsic video rectangle.
+  const x = Math.max(0, Math.min(Vw, rawX));
+  const y = Math.max(0, Math.min(Vh, rawY));
+  const w = Math.max(1, Math.min(Vw - x, rawW));
+  const h = Math.max(1, Math.min(Vh - y, rawH));
+  return { x, y, w, h };
+}
+
+function clearOverlay() {
+  const octx = els.overlay.getContext('2d');
+  octx.clearRect(0, 0, els.overlay.width, els.overlay.height);
+}
+
+function activateRoiView(roi) {
+  currentRoi = roi;
+  const stage = document.getElementById('stage');
+  const stageRect = stage.getBoundingClientRect();
+  // Match canvas pixel buffer to its CSS size for a crisp render.
+  els.roiView.width = Math.max(1, Math.round(stageRect.width * devicePixelRatio));
+  els.roiView.height = Math.max(1, Math.round(stageRect.height * devicePixelRatio));
+  els.roiView.hidden = false;
+  document.body.dataset.roiActive = 'true';
+  clearOverlay();
+}
+
+function deactivateRoiView() {
+  currentRoi = null;
+  els.roiView.hidden = true;
+  document.body.dataset.roiActive = 'false';
+  roiViewCtx.clearRect(0, 0, els.roiView.width, els.roiView.height);
+}
+
+/**
+ * Show/hide the cooldown pill and update its countdown + progress bar.
+ * Only relevant while the run is actively expecting triggers
+ * (WAITING_START or RUNNING) — during IDLE/FINISHED the indicator stays hidden.
+ */
+function updateCooldownIndicator(mediaTime) {
+  const remaining = detector.cooldownRemaining(mediaTime);
+  const active =
+    remaining > 0 &&
+    (state === STATE.WAITING_START || state === STATE.RUNNING);
+
+  if (!active) {
+    if (!els.cooldown.hidden) els.cooldown.hidden = true;
+    return;
+  }
+
+  els.cooldown.hidden = false;
+  els.cooldownText.textContent = t('ui.cooldown', {
+    seconds: remaining.toFixed(1),
+  });
+  const pct = Math.max(0, Math.min(100, (remaining / detector.cooldownSeconds) * 100));
+  els.cooldownFill.style.width = `${pct}%`;
+}
+
+function drawRoiView(video) {
+  if (!currentRoi) return;
+  const { width: cw, height: ch } = els.roiView;
+  roiViewCtx.clearRect(0, 0, cw, ch);
+  // Letterbox — preserve the ROI's aspect ratio so the image doesn't stretch.
+  const scale = Math.min(cw / currentRoi.w, ch / currentRoi.h);
+  const dw = currentRoi.w * scale;
+  const dh = currentRoi.h * scale;
+  const dx = (cw - dw) / 2;
+  const dy = (ch - dh) / 2;
+  roiViewCtx.drawImage(
+    video,
+    currentRoi.x, currentRoi.y, currentRoi.w, currentRoi.h,
+    dx, dy, dw, dh,
+  );
+}
+
 function onFrame(frame, metadata) {
   // metadata.mediaTime is the authoritative frame timestamp (seconds).
   // Measure FPS/precision on every frame regardless of state, so the user
   // can see current timing quality even before arming a run.
   updateFpsReadout(metadata.mediaTime);
+  // Render the ROI crop (no-op if the user hasn't set a ROI yet).
+  drawRoiView(frame);
+  // Show/tick the cooldown pill — must run each frame so the countdown is live.
+  updateCooldownIndicator(metadata.mediaTime);
 
   if (state === STATE.IDLE || state === STATE.FINISHED) return;
 
@@ -179,8 +298,12 @@ els.btnStartCamera.addEventListener('click', async () => {
 });
 
 els.btnSetRoi.addEventListener('click', async () => {
-  const roi = await roiPicker.pick();
-  detector.setRoi(roi);
+  // Re-show the full camera so the user can see what they're selecting.
+  deactivateRoiView();
+  const cssRoi = await roiPicker.pick();
+  const videoRoi = mapCssRoiToVideoRoi(cssRoi, els.video, els.overlay);
+  detector.setRoi(videoRoi);
+  activateRoiView(videoRoi);
   els.btnArm.disabled = false;
 });
 

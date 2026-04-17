@@ -14,6 +14,7 @@ export default {
   'ui.debug': 'Depuración',
   'ui.language': 'Idioma',
   'ui.fpsReadout': '{fps} FPS · ±{ms} ms',
+  'ui.cooldown': 'Espera {seconds}s',
 
   'voice.start': 'Salida',
   'voice.finish': 'Meta. {seconds} segundos',

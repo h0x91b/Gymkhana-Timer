@@ -114,13 +114,18 @@ State machine lives in `app.js`. The detector is stateless w.r.t. the run — it
 Runtime for tooling is **Bun** (`>=1.1.0`). The shipped app has zero runtime deps. `qrcode-terminal` is a **dev-only** dependency used by the dev server to draw a QR code in the terminal; it never reaches the shipped bundle.
 
 ```bash
-bun install             # first-time only — installs the dev deps
-bun run start           # static server on http://localhost:8080 + cloudflared tunnel + QR
-PORT=3000 bun run start # override port
-TUNNEL=0 bun run start  # skip the cloudflared tunnel (local-only)
+bun install                # first-time only — installs the dev deps
+bun run start              # static server + cloudflared tunnel + QR + live reload
+PORT=3000 bun run start    # override port
+TUNNEL=0 bun run start     # skip the cloudflared tunnel (local-only)
+DEV_RELOAD=0 bun run start # skip the live-reload shim (e.g. when testing the SW itself)
 ```
 
 `bun run dev` is an alias for `bun run start`. The server script is [`scripts/dev-server.ts`](./scripts/dev-server.ts) — a `Bun.serve`-based static server. It serves files from the repo root, disables caching (so the service worker and source files always refresh), rejects path-traversal attempts, and prints LAN addresses on startup.
+
+### Live reload
+
+The server injects a tiny `<script>` shim before `</body>` in every served HTML response. The shim opens an SSE connection to `/_dev/reload`. A `fs.watch(ROOT, { recursive: true })` watcher on the server — filtered to ignore `.git/`, `node_modules/`, `change-logs/`, `decisions/`, `.dev3/`, `.claude/`, and dotfile / swap-file noise — broadcasts a `reload` event on any real change. The browser then unregisters the service worker, `caches.delete()`s every cache bucket, and calls `location.reload()`, so the next request actually hits the network instead of the stale SW cache. Disable with `DEV_RELOAD=0 bun run start` when you're testing the SW itself.
 
 ### Camera on a phone
 

@@ -12,13 +12,18 @@
 <body>
   <main id="stage">
     <video id="cam" playsinline autoplay muted></video>
+    <canvas id="roi-view" hidden></canvas>
     <canvas id="overlay"></canvas>
 
     <div id="hud">
       <div id="timer" class="timer">0.000</div>
       <div id="status" class="status" data-status="IDLE" data-i18n-key="status.idle">IDLE</div>
+      <div id="cooldown" class="cooldown" hidden>
+        <div id="cooldown-text" class="cooldown-text"></div>
+        <div class="cooldown-bar"><div id="cooldown-fill" class="cooldown-fill"></div></div>
+      </div>
       <div id="fps-readout" class="fps-readout" hidden>— FPS · ±— ms</div>
-      <div id="debug" class="debug" hidden></div>
+      <div id="debug" class="debug"></div>
     </div>
 
     <div id="controls" class="controls">
@@ -28,10 +33,10 @@
       <button id="btn-reset" type="button" disabled data-i18n-key="ui.reset">Reset</button>
       <label class="threshold">
         <span data-i18n-key="ui.threshold">Threshold</span>
-        <input id="threshold" type="range" min="0.01" max="0.5" step="0.01" value="0.15" />
+        <input id="threshold" type="range" min="0.01" max="0.5" step="0.01" value="0.30" />
       </label>
       <label class="debug-toggle">
-        <input id="debug-toggle" type="checkbox" />
+        <input id="debug-toggle" type="checkbox" checked />
         <span data-i18n-key="ui.debug">Debug</span>
       </label>
       <label class="lang-select">
