@@ -47,6 +47,7 @@ const storage = new Storage();
 
 let state = STATE.IDLE;
 let t0 = 0;
+let startedAt = 0;
 let wakeLock = null;
 
 // FPS / timing-precision tracking.
@@ -153,6 +154,7 @@ function onFrame(frame, metadata) {
 
   if (state === STATE.WAITING_START) {
     t0 = metadata.mediaTime;
+    startedAt = Date.now();
     timer.start(t0);
     timer.speak(t('voice.start'));
     setState(STATE.RUNNING);
@@ -163,7 +165,7 @@ function onFrame(frame, metadata) {
     const elapsed = metadata.mediaTime - t0;
     timer.stop(elapsed);
     timer.speak(t('voice.finish', { seconds: elapsed.toFixed(1) }));
-    storage.save({ elapsed, at: Date.now() });
+    storage.save({ elapsed, startedAt, finishedAt: Date.now() });
     setState(STATE.FINISHED);
   }
 }
