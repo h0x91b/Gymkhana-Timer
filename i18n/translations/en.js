@@ -14,6 +14,9 @@ export default {
   'ui.threshold': 'Threshold',
   'ui.debug': 'Debug',
   'ui.language': 'Language',
+  // {fps} is the measured frame rate (integer), {ms} is half the frame interval,
+  // i.e. the per-event timing uncertainty of motion detection.
+  'ui.fpsReadout': '{fps} FPS · ±{ms} ms',
 
   'voice.start': 'Start',
   'voice.finish': 'Finish. {seconds} seconds',

@@ -13,6 +13,7 @@ export default {
   'ui.threshold': 'Порог',
   'ui.debug': 'Отладка',
   'ui.language': 'Язык',
+  'ui.fpsReadout': '{fps} FPS · ±{ms} мс',
 
   'voice.start': 'Старт',
   // Fractional seconds always take "секунды" in Russian speech, so no plural split here.

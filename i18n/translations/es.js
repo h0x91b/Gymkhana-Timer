@@ -13,6 +13,7 @@ export default {
   'ui.threshold': 'Umbral',
   'ui.debug': 'Depuración',
   'ui.language': 'Idioma',
+  'ui.fpsReadout': '{fps} FPS · ±{ms} ms',
 
   'voice.start': 'Salida',
   'voice.finish': 'Meta. {seconds} segundos',

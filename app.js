@@ -28,6 +28,7 @@ const els = {
   overlay: document.getElementById('overlay'),
   timer: document.getElementById('timer'),
   status: document.getElementById('status'),
+  fpsReadout: document.getElementById('fps-readout'),
   debug: document.getElementById('debug'),
   btnStartCamera: document.getElementById('btn-start-camera'),
   btnSetRoi: document.getElementById('btn-set-roi'),
@@ -48,12 +49,63 @@ let state = STATE.IDLE;
 let t0 = 0;
 let wakeLock = null;
 
+// FPS / timing-precision tracking.
+// Rolling buffer of the last N frame intervals (seconds), sourced from
+// metadata.mediaTime — the authoritative frame clock from rVFC.
+// Timing precision for a single detection event is half the frame interval
+// (uniform uncertainty over the [prev frame, current frame] window).
+const FPS_WINDOW = 30;
+const fpsBuf = new Float32Array(FPS_WINDOW);
+let fpsIdx = 0;
+let fpsFilled = 0;
+let fpsPrevMediaTime = 0;
+let fpsLastRenderMs = 0;
+let fpsLastFps = 0;
+let fpsLastPrecisionMs = 0;
+
+function updateFpsReadout(frameMediaTime) {
+  if (fpsPrevMediaTime) {
+    const dt = frameMediaTime - fpsPrevMediaTime;
+    // Guard against video-seek / track-swap anomalies: only accept plausible
+    // intra-stream deltas (roughly 1 FPS .. 240 FPS).
+    if (dt > 0.004 && dt < 1) {
+      fpsBuf[fpsIdx] = dt;
+      fpsIdx = (fpsIdx + 1) % FPS_WINDOW;
+      if (fpsFilled < FPS_WINDOW) fpsFilled++;
+    }
+  }
+  fpsPrevMediaTime = frameMediaTime;
+
+  if (fpsFilled < 5) return;
+  const nowMs = performance.now();
+  if (nowMs - fpsLastRenderMs < 250) return;
+  fpsLastRenderMs = nowMs;
+
+  let sum = 0;
+  for (let i = 0; i < fpsFilled; i++) sum += fpsBuf[i];
+  const avgDt = sum / fpsFilled;
+  const fps = Math.round(1 / avgDt);
+  const precisionMs = Math.round((avgDt * 1000) / 2);
+  if (fps === fpsLastFps && precisionMs === fpsLastPrecisionMs) return;
+  fpsLastFps = fps;
+  fpsLastPrecisionMs = precisionMs;
+  els.fpsReadout.textContent = t('ui.fpsReadout', { fps, ms: precisionMs });
+  els.fpsReadout.hidden = false;
+}
+
 function applyTranslations() {
   for (const el of document.querySelectorAll('[data-i18n-key]')) {
     el.textContent = t(el.dataset.i18nKey);
   }
   // Status element has a dynamic key — re-resolve from its current data-status.
   els.status.textContent = t(statusKey(els.status.dataset.status));
+  // FPS readout uses interpolation — re-render with the last measured values.
+  if (!els.fpsReadout.hidden) {
+    els.fpsReadout.textContent = t('ui.fpsReadout', {
+      fps: fpsLastFps,
+      ms: fpsLastPrecisionMs,
+    });
+  }
   document.documentElement.lang = getLocale();
 }
 
@@ -85,6 +137,10 @@ async function requestWakeLock() {
 
 function onFrame(frame, metadata) {
   // metadata.mediaTime is the authoritative frame timestamp (seconds).
+  // Measure FPS/precision on every frame regardless of state, so the user
+  // can see current timing quality even before arming a run.
+  updateFpsReadout(metadata.mediaTime);
+
   if (state === STATE.IDLE || state === STATE.FINISHED) return;
 
   const triggered = detector.process(frame, metadata);
