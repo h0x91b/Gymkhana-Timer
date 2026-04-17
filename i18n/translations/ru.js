@@ -13,6 +13,7 @@ export default {
   'ui.threshold': 'Порог',
   'ui.debug': 'Отладка',
   'ui.language': 'Язык',
+  'ui.update': 'Обновить',
   'ui.fpsReadout': '{fps} FPS · ±{ms} мс',
   'ui.cooldown': 'Ожидание {seconds}с',
 

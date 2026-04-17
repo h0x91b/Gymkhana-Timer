@@ -79,7 +79,7 @@ roi.js            tap-to-pick ROI on the overlay
 timer.js          timer display + speechSynthesis feedback
 storage.js        run history in localStorage
 style.css         fullscreen HUD styling
-manifest.json     PWA manifest (fullscreen, landscape)
+manifest.json     PWA manifest (fullscreen, portrait)
 sw.js             service worker (cache-first offline)
 icons/            PWA icons (192, 512) — see icons/README.md
 change-logs/      one entry per session (see below)

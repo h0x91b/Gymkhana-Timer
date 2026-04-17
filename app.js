@@ -6,6 +6,7 @@ import { Detector } from './detector.js';
 import { RoiPicker } from './roi.js';
 import { Timer } from './timer.js';
 import { Storage } from './storage.js';
+import { renderVersionBadge } from './version.js';
 import {
   ALL_LOCALES,
   LOCALE_LABELS,
@@ -38,6 +39,8 @@ const els = {
   btnSetRoi: document.getElementById('btn-set-roi'),
   btnArm: document.getElementById('btn-arm'),
   btnReset: document.getElementById('btn-reset'),
+  btnUpdate: document.getElementById('btn-update'),
+  versionBadge: document.getElementById('version-badge'),
   threshold: document.getElementById('threshold'),
   debugToggle: document.getElementById('debug-toggle'),
   langSelect: document.getElementById('lang-select'),
@@ -338,12 +341,113 @@ onLocaleChange(applyTranslations);
 populateLangSelect();
 applyTranslations();
 setState(STATE.IDLE);
+renderVersionBadge(els.versionBadge);
 
-// Register service worker for offline/PWA.
+// ---------------------------------------------------------------------------
+// Service worker registration + in-app update flow.
+//
+// Goals:
+//   1. Install the SW so the app works offline and is installable as PWA.
+//   2. Detect new SW versions while the app is running and apply them without
+//      forcing the user to "clear site data" or reinstall the PWA.
+//   3. Never reload mid-run: if state is IDLE or FINISHED we auto-apply the
+//      update silently; if WAITING_START or RUNNING we show a small "Update"
+//      button in the controls row and let the rider press it when safe.
+//
+// Mechanics:
+//   - sw.js no longer calls skipWaiting() in 'install'; new versions sit in
+//     `waiting` until we post { type: 'SKIP_WAITING' }. That keeps the
+//     decision on the client side.
+//   - We poll registration.update() periodically and on tab re-focus so that
+//     new versions are discovered promptly (browsers otherwise re-check the
+//     SW file only on navigation, and at most every 24h).
+//   - Once a new SW is 'installed' with an existing controller, we either
+//     activate it immediately (safe state) or expose the Update button.
+//   - A 'controllerchange' listener performs the one-shot reload once the
+//     new SW takes over — but only if there was a controller before, so
+//     first-load doesn't trigger a spurious reload when clients.claim() runs.
+//
+// Dev-mode note: the dev server's live-reload shim unregisters the SW and
+// nukes caches on every file change (scripts/dev-server.ts), so this update
+// flow does not fire under the default `bun run start`. To exercise it end
+// to end, start with DEV_RELOAD=0 bun run start, bump CACHE_VERSION in
+// sw.js, hit refresh once to install the new worker, and watch for either
+// the silent reload or the Update button depending on state.
+// ---------------------------------------------------------------------------
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js').catch((err) => {
+    registerServiceWorker();
+  });
+}
+
+function registerServiceWorker() {
+  // Capture whether the page is already controlled before registration — we
+  // only want 'controllerchange' to trigger a reload for genuine updates,
+  // not for the first-ever install where clients.claim() transitions a
+  // previously-uncontrolled page to controlled.
+  const hadController = Boolean(navigator.serviceWorker.controller);
+
+  let reloading = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController) return;
+    if (reloading) return;
+    reloading = true;
+    location.reload();
+  });
+
+  navigator.serviceWorker
+    .register('./sw.js')
+    .then((registration) => {
+      // Case 1: page loaded and a waiting SW was already present from a
+      // previous session (user opened the PWA, closed it before deciding to
+      // update, reopened now).
+      if (registration.waiting && navigator.serviceWorker.controller) {
+        onUpdateReady(registration.waiting);
+      }
+
+      // Case 2: a new SW starts installing while the page is live.
+      registration.addEventListener('updatefound', () => {
+        const installing = registration.installing;
+        if (!installing) return;
+        installing.addEventListener('statechange', () => {
+          if (installing.state === 'installed' && navigator.serviceWorker.controller) {
+            onUpdateReady(installing);
+          }
+        });
+      });
+
+      // Poll for new SW files periodically and when the tab regains focus.
+      const pollMs = 60_000;
+      setInterval(() => registration.update().catch(() => {}), pollMs);
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) registration.update().catch(() => {});
+      });
+    })
+    .catch((err) => {
       console.warn('SW registration failed:', err);
     });
-  });
+}
+
+// Called exactly once per pending SW version. Either applies the update
+// silently (safe state) or wires up the Update button for manual apply.
+function onUpdateReady(worker) {
+  const safe = state === STATE.IDLE || state === STATE.FINISHED;
+  if (safe) {
+    worker.postMessage({ type: 'SKIP_WAITING' });
+    return;
+  }
+  showUpdateButton(() => worker.postMessage({ type: 'SKIP_WAITING' }));
+}
+
+function showUpdateButton(onClick) {
+  els.btnUpdate.hidden = false;
+  // Replace the node to discard any previous click handler so repeated
+  // updatefound events don't stack listeners.
+  const fresh = els.btnUpdate.cloneNode(true);
+  els.btnUpdate.replaceWith(fresh);
+  els.btnUpdate = fresh;
+  els.btnUpdate.addEventListener('click', () => {
+    els.btnUpdate.disabled = true;
+    onClick();
+  }, { once: true });
 }

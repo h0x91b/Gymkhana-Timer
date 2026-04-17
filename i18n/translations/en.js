@@ -14,6 +14,9 @@ export default {
   'ui.threshold': 'Threshold',
   'ui.debug': 'Debug',
   'ui.language': 'Language',
+  // Shown on the in-app update button when a new service worker version is
+  // pending. Clicking it swaps the SW and reloads the page.
+  'ui.update': 'Update',
   // {fps} is the measured frame rate (integer), {ms} is half the frame interval,
   // i.e. the per-event timing uncertainty of motion detection.
   'ui.fpsReadout': '{fps} FPS · ±{ms} ms',

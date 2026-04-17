@@ -17,7 +17,7 @@ export class Detector {
     this._refAccum = null;
     this._refCount = 0;
 
-    this.threshold = 0.30;
+    this.threshold = 0.25;
     this.pixelDiffThreshold = 28; // per-channel delta to count as motion
     this._lastTriggerAt = -Infinity;
     this.cooldownSeconds = COOLDOWN_SECONDS;

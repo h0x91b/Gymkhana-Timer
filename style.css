@@ -251,6 +251,27 @@ body[data-roi-active="true"] #cam {
   font-variant-numeric: tabular-nums;
 }
 
+/* Version badge — tiny mono readout showing the currently-running SW cache
+   version and its last-modified timestamp. Purpose is diagnostic: when
+   testing the update flow you want an unambiguous "which build is this?"
+   answer without opening DevTools. Kept very subtle so it doesn't compete
+   with the timer; lives at the end of the HUD column. */
+.version-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.4;
+  letter-spacing: -0.2px;
+  color: var(--fg-on-dark);
+  background: rgba(20, 20, 19, 0.45);
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+
 /* Debug — mono, caption size. */
 .debug {
   font-family: var(--font-mono);
@@ -322,6 +343,22 @@ body[data-roi-active="true"] #cam {
 }
 
 .controls button.primary:not(:disabled):hover {
+  background: var(--terracotta-hover);
+  box-shadow: 0 0 0 1px var(--terracotta-hover);
+}
+
+/* Update button — surfaces when a new service worker is waiting. Uses the
+   primary terracotta styling (highest-signal brand moment per DESIGN.md) so
+   it reads as "action available" without being alarming. Hidden by default;
+   app.js toggles the `hidden` attribute when it decides to prompt the user. */
+.controls button.update {
+  background: var(--terracotta);
+  color: var(--ivory);
+  border-radius: var(--radius-md);
+  box-shadow: 0 0 0 1px var(--terracotta);
+}
+
+.controls button.update:not(:disabled):hover {
   background: var(--terracotta-hover);
   box-shadow: 0 0 0 1px var(--terracotta-hover);
 }

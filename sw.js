@@ -1,5 +1,5 @@
 // Minimal offline cache. Bump CACHE_VERSION on every deploy to invalidate.
-const CACHE_VERSION = 'gymkhana-v2';
+const CACHE_VERSION = 'gymkhana-v7';
 const ASSETS = [
   './',
   './index.html',
@@ -10,6 +10,7 @@ const ASSETS = [
   './roi.js',
   './timer.js',
   './storage.js',
+  './version.js',
   './i18n/index.js',
   './i18n/interpolate.js',
   './i18n/translations/en.js',
@@ -21,8 +22,13 @@ const ASSETS = [
 ];
 
 self.addEventListener('install', (event) => {
+  // Do NOT skipWaiting() here — we want new versions to sit in `waiting`
+  // until the client explicitly asks us to take over (see 'message' handler
+  // below). That lets app.js decide whether to auto-apply the update (safe
+  // states like IDLE / FINISHED) or defer until the user presses the
+  // "Update" button (mid-run, where a reload would be disruptive).
   event.waitUntil(
-    caches.open(CACHE_VERSION).then((cache) => cache.addAll(ASSETS)).then(() => self.skipWaiting()),
+    caches.open(CACHE_VERSION).then((cache) => cache.addAll(ASSETS)),
   );
 });
 
@@ -32,6 +38,16 @@ self.addEventListener('activate', (event) => {
       Promise.all(keys.filter((k) => k !== CACHE_VERSION).map((k) => caches.delete(k))),
     ).then(() => self.clients.claim()),
   );
+});
+
+// Client-initiated activation. app.js posts { type: 'SKIP_WAITING' } when it
+// has decided the moment is right to apply a pending update; this triggers
+// install → activating → activated and fires `controllerchange` on clients,
+// which app.js uses to reload.
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
 });
 
 self.addEventListener('fetch', (event) => {
