@@ -178,13 +178,14 @@ See [`change-logs/README.md`](./change-logs/README.md).
 
 ## Decision records
 
-Document non-obvious architectural decisions, hacks, and workarounds in `decisions/`. This explains **why** to future agents and humans — not just what.
+Document non-obvious architectural decisions, hacks, and workarounds in `decisions/`. This explains **why** to future agents and humans — not just what. Reserve it for real choices between conflicting approaches; routine bug fixes and standard-API patterns never qualify on their own.
 
 **Create a decision record when:**
 - You relied on undocumented browser behavior or reverse-engineered internals
-- You picked a non-obvious approach over a simpler one for a specific reason
 - You implemented a workaround for a browser / API limitation
-- The decision involves trade-offs or known risks worth documenting
+- You picked a non-obvious approach over a simpler one and a reasonable reader would assume otherwise
+
+If you can't name 2+ real alternatives you actually considered, you don't have a decision — skip the file.
 
 - **Path:** `decisions/NNN-short-slug.md` (sequential numbering; check existing files for the next number)
 - **Required sections:** `Context`, `Investigation` (if applicable), `Decision`, `Risks`, `Alternatives considered`
