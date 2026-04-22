@@ -178,30 +178,17 @@ See [`change-logs/README.md`](./change-logs/README.md).
 
 ## Decision records
 
-Document genuine architectural decisions in `decisions/` — the kind that involved a real choice between conflicting approaches and where the chosen one is non-obvious.
+Document non-obvious architectural decisions, hacks, and workarounds in `decisions/`. This explains **why** to future agents and humans — not just what. Reserve it for real choices between conflicting approaches; routine bug fixes and standard-API patterns never qualify on their own.
 
-**Hard rule: a decision record is NOT the default.** If every task produces a decision file, you're doing it wrong. The test is simple:
+**Create a decision record when:**
+- You relied on undocumented browser behavior or reverse-engineered internals
+- You implemented a workaround for a browser / API limitation
+- You picked a non-obvious approach over a simpler one and a reasonable reader would assume otherwise
 
-> Did this task present an actual conflict between two or more plausible approaches, where the "right" one is not self-evident from the code?
-
-If no → **skip it.** The commit message and changelog entry carry the context. Bug fixes, routine refactors, and "we followed the documented pattern for API X" are not decisions — they're just work. A bug fix is never a decision record, even when several fix strategies existed; pick one, fix, move on.
-
-**Create a decision record only when all of these are true:**
-- There was a real choice between alternatives that a reasonable engineer could have picked differently.
-- The chosen path would look wrong or surprising to someone reading the code later without this context.
-- Re-deriving the reasoning from scratch would be expensive (hours, not minutes).
-
-**Examples of things that DO warrant a decision record** (see existing `decisions/` for shape):
-- Using CSS transform for pinch-zoom instead of the standard Visual Viewport API, because the spec interaction was broken on the target device.
-- Running a dev-server tunnel via `cloudflared` instead of self-signed HTTPS, after considering three alternatives.
-
-**Examples of things that do NOT warrant a decision record:**
-- Re-requesting a Wake Lock on `visibilitychange` — that's the standard MDN pattern for a released lock. Not a decision, just a correct bug fix.
-- Adding a null check. Renaming a variable. Bumping `CACHE_VERSION`.
-- Picking one of several ways to fix a crash when all of them are obvious.
+If you can't name 2+ real alternatives you actually considered, you don't have a decision — skip the file.
 
 - **Path:** `decisions/NNN-short-slug.md` (sequential numbering; check existing files for the next number)
-- **Required sections:** `Context`, `Investigation` (if applicable), `Decision`, `Risks`, `Alternatives considered` — the last one is the tell: if you can't list 2+ real alternatives you actually considered, you don't have a decision.
+- **Required sections:** `Context`, `Investigation` (if applicable), `Decision`, `Risks`, `Alternatives considered`
 - **Keep it short.** Each section 2–4 sentences. Fits on one screen. Link to relevant file + function names.
 - Include the decision file in the same commit as the code change.
 
