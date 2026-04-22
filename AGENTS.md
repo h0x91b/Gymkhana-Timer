@@ -111,6 +111,9 @@ The app's entire value is "don't make the rider walk back to the phone between r
   - `finish, N.N seconds` on second trigger,
   - `ready to go` when `COOLDOWN` completes and `ARMED` is reached.
 - **Stop session is an overlay, not a persistent button.** Controls hide after session start; a tap anywhere reveals them briefly. This prevents accidental stops during a run but keeps the escape hatch obvious.
+- **Daylight signal colours drive the background, not decorative labels.** `--signal-go` (bright lime) on `ARMED`, `--signal-wait` (golden amber) on `COOLDOWN` and the first 20 s of `OBSERVING`, `--signal-error` (bright coral) once `OBSERVING` exceeds 20 s, `--parchment` on `RUNNING`. The full viewport is tinted — small pills do not survive the 10-metre test. Full contract lives in [`DESIGN.md` §0.1](./DESIGN.md#01-signal-background-colour-system).
+- **`ARMED` pulses.** 1.4 s, ±6 % brightness, disabled under `prefers-reduced-motion`.
+- **ROI preview shrinks to a corner thumbnail** in every hands-free phase (lower-left, ~`20vw × 15vh`). The rider still wants to self-check framing; they do **not** want it competing with the timer. Full-screen ROI only during `setup`.
 
 Anything that violates these rules is a regression even if other tests pass.
 
@@ -296,7 +299,7 @@ All user-facing strings MUST be localized. The i18n system lives in [`i18n/`](./
 ```js
 import { t, tPlural, getLocale, setLocale, onLocaleChange, statusKey } from './i18n/index.js';
 
-t('ui.arm');                                  // → "Arm" / "Готов" / "Armar"
+t('ui.startSession');                         // → "Start session" / "Начать сессию" / "Iniciar sesión"
 t('voice.finish', { seconds: '42.3' });       // → "Finish. 42.3 seconds"
 tPlural('history.runCount', 3);               // picks _one/_few/_many/_other automatically
 setLocale('ru');                              // persists to localStorage("gymkhana-locale")
@@ -308,7 +311,7 @@ onLocaleChange(() => rerender());             // subscribe to changes
 Any element with `data-i18n-key="..."` has its `textContent` replaced on boot and on every locale change:
 
 ```html
-<button id="btn-arm" data-i18n-key="ui.arm">Arm</button>
+<button id="btn-session" data-i18n-key="ui.startSession">Start session</button>
 ```
 
 The English text in the HTML serves as a visible fallback if the i18n module fails to load.

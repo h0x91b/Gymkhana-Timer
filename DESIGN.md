@@ -13,6 +13,33 @@ Therefore, in every state after the initial setup screen, the following rule ove
 - **Controls hide after `Start session`.** A tap reveals them briefly; otherwise the screen is timer-only. Rationale: the rider must read the screen from a distance — chrome is dead weight at that distance.
 - **Voice is the primary feedback channel at range** (`start`, `finish, N.N seconds`, `ready to go`), so the UI is optimized for legibility, not for rich affordance discovery.
 
+### 0.1 Signal-Background Colour System
+
+The phone is read from 5–10 metres in **bright outdoor daylight**. Dark surfaces are useless at that distance — every state signal is a **bright, high-saturation light tint** that fills the whole viewport (except the timer card and the tiny ROI preview in the corner). The colour is the semaphore; the rider does not need to read any text to know whether they can go.
+
+Tokens live in `style.css` under `--signal-*`:
+
+| Phase | Token | Hex (light theme) | Meaning |
+|---|---|---|---|
+| `armed` (ready to go) | `--signal-go` | `#b9e089` | Bright warm lime — "gas it". Slow pulse (±6 % brightness, 1.4 s cycle). |
+| `cooldown` (15 s between-runs countdown) **and** `observing` for the first ≤ 20 s | `--signal-wait` | `#f2cc6b` | Golden/amber — "not yet, wait". |
+| `observing` after > 20 s of failed stabilisation (error/attention state) | `--signal-error` | `#f57a62` | Bright coral — "come over, something is wrong". |
+| `running` | `--parchment` (default) | `#f5f4ed` | Neutral — timer is the only thing changing; avoid distracting the rider mid-run. |
+| `finished` (short ≈ 1 s flash) | `--ivory` → `--signal-wait` | cross-fade | Momentary confirmation before dropping into cooldown. |
+| `setup` | `--parchment` | `#f5f4ed` | Pre-session chrome on the default surface. |
+
+Rules:
+
+- The signal colour occupies the **entire body background** via `body[data-phase="…"] { background: var(--signal-…); }`. Do not apply it as a small pill or border — the whole viewport IS the signal.
+- Timer text on every signal colour is `--fg` (`#141413`). Contrast ratios verified: ≥ 7 : 1 on go, ≥ 8 : 1 on wait, ≥ 5.5 : 1 on error.
+- `armed` pulse is CSS-only (`@keyframes armedPulse`), uses `filter: brightness(…)` on the body, and is disabled under `prefers-reduced-motion: reduce`.
+- **Never combine two signal colours at once.** If multiple conditions could apply, pick the one with the higher severity (`error > wait > go`).
+- Dark-theme overrides for `--signal-*` are intentionally near-identical to light — the app is daylight-only by design; see `TZ.md`.
+
+### 0.2 ROI Preview Placement
+
+During `setup` the ROI crop fills the screen so the user can verify framing. In every hands-free phase (`observing` / `armed` / `running` / `cooldown` / `error`) the ROI preview **must shrink to a corner thumbnail** (`≈ 20vw × 15vh`, lower-left by default, rounded corners, thin warm ring). It stays on-screen because the rider might glance at it for self-check — but it is **subordinate to the timer** and never competes for the centre. No full-screen ROI in hands-free.
+
 The rest of this document defines the palette and type system used to express the above. If a guideline here conflicts with the rule above (e.g. "use a full typographic hierarchy"), the rule above wins — this app does not have room for a hierarchy; it has one hero readout and everything else is subordinate.
 
 ## 1. Visual Theme & Atmosphere

@@ -51,6 +51,15 @@
   --status-running: #4d4c48;     /* Charcoal warm — subdued during run */
   --status-finished: #3898ec;    /* Focus blue — the one permitted cool moment */
 
+  /* === Signal-background colours (DESIGN.md §0.1) ===
+     Light, high-saturation tints that fill the whole viewport so the rider
+     can read the app's state from 10 m under bright daylight. Bright outdoors
+     only — no dark variants. Timer text (--fg) keeps ≥ 5.5 : 1 contrast on
+     every signal. Never mix two at once; higher severity wins. */
+  --signal-go: #b9e089;          /* ARMED — warm lime, "gas it" */
+  --signal-wait: #f2cc6b;        /* COOLDOWN / early OBSERVING — golden amber, "not yet" */
+  --signal-error: #f57a62;       /* OBSERVING > 20s — bright coral, "come over" */
+
   /* === Shadows === */
   --shadow-whisper: rgba(0, 0, 0, 0.05) 0px 4px 24px;
   --shadow-hud: 0 2px 12px rgba(20, 20, 19, 0.45);
@@ -68,7 +77,9 @@
 }
 
 [data-theme="dark"] {
-  /* Dark theme still warm — same palette, different elevation mapping. */
+  /* Dark theme still warm — same palette, different elevation mapping.
+     Signal tokens stay bright: the app is daylight-only (TZ.md) and we
+     never want a dark "ready to go" signal for a rider 10m away. */
   --parchment: #141413;
   --ivory: #30302e;
   --white: #30302e;
@@ -108,6 +119,31 @@ body {
   user-select: none;
   -webkit-user-select: none;
   touch-action: none;
+
+  /* Background switches with phase so the rider reads state from 10m in
+     bright daylight. Timer text always stays --fg (warm near-black) which
+     keeps ≥ 5.5:1 contrast on every signal. See DESIGN.md §0.1. */
+  transition: background-color 260ms ease;
+}
+
+body[data-phase="running"]   { background: var(--parchment); }
+body[data-phase="observing"] { background: var(--signal-wait); }
+body[data-phase="cooldown"]  { background: var(--signal-wait); }
+body[data-phase="armed"]     { background: var(--signal-go); }
+body[data-phase="error"]     { background: var(--signal-error); }
+body[data-phase="finished"]  { background: var(--ivory); }
+
+/* ARMED pulses so "go!" is catchable by peripheral vision even if the rider
+   isn't looking straight at the phone. ±6% brightness, 1.4s cycle. */
+@keyframes armedPulse {
+  0%, 100% { filter: brightness(0.96); }
+  50%      { filter: brightness(1.04); }
+}
+body[data-phase="armed"] {
+  animation: armedPulse 1.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  body[data-phase="armed"] { animation: none; }
 }
 
 #stage {
@@ -214,9 +250,49 @@ body[data-roi-active="true"] #hud {
 
 /* Hero-sized timer once a ROI is active — the number becomes the page. */
 body[data-roi-active="true"] .timer {
-  font-size: clamp(120px, 36vw, 420px);
+  font-size: clamp(160px, 40vh, 520px);
   padding: 12px 40px;
   border-radius: var(--radius-xl);
+}
+
+/* Once the hands-free session loop is running, the signal colour owns the
+   viewport and the timer-card chrome (ivory fill + ring shadow) would just
+   mute the signal. Drop the card: the serif numerals float directly on the
+   signal tint, which is exactly what DESIGN.md §0.1 calls for. */
+body[data-phase="observing"] .timer,
+body[data-phase="armed"] .timer,
+body[data-phase="running"] .timer,
+body[data-phase="finished"] .timer,
+body[data-phase="cooldown"] .timer,
+body[data-phase="error"] .timer {
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+}
+
+/* Secondary sub-line under the timer: 15s countdown, "Ready to go", previous
+   run time, or observing hint. Deliberately small and subordinate — the
+   large number is the main event; this is the colour-neutral caption. */
+.timer-subline {
+  font-family: var(--font-sans);
+  font-size: clamp(18px, 3.2vh, 32px);
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: 0.2px;
+  color: var(--fg-strong);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  max-width: min(90vw, 640px);
+}
+
+/* Make the sub-line a touch lighter on the bright signal colours so it
+   doesn't compete with the timer; it still reads easily at a distance. */
+body[data-phase="observing"] .timer-subline,
+body[data-phase="cooldown"] .timer-subline,
+body[data-phase="armed"] .timer-subline,
+body[data-phase="error"] .timer-subline {
+  color: var(--fg);
+  opacity: 0.75;
 }
 
 /* Status — small sans overline, uppercase, subtle. */
@@ -235,9 +311,26 @@ body[data-roi-active="true"] .timer {
   -webkit-backdrop-filter: blur(4px);
 }
 
-.status[data-status="WAITING_START"] { color: var(--terracotta); }
+.status[data-status="ARMED"]         { color: var(--terracotta); }
+.status[data-status="OBSERVING"]     { color: var(--fg-on-dark); }
 .status[data-status="RUNNING"]       { color: var(--fg-on-dark); }
 .status[data-status="FINISHED"]      { color: var(--focus); }
+.status[data-status="COOLDOWN"]      { color: var(--fg-on-dark); }
+.status[data-status="ERROR"]         { color: var(--error); }
+
+/* Once the session loop is live, the signal background already communicates
+   state. The small status pill would just be redundant chrome; hide it to
+   keep the timer clean. Debug mode keeps it around via the debug flag on
+   the body (see app.js). */
+body[data-phase="observing"] .status,
+body[data-phase="armed"] .status,
+body[data-phase="running"] .status,
+body[data-phase="finished"] .status,
+body[data-phase="cooldown"] .status,
+body[data-phase="error"] .status {
+  display: none;
+}
+body[data-debug="true"] .status { display: inline-block; }
 
 /* Cooldown indicator — Ivory pill with a terracotta progress bar that drains
    after each detected trigger. Makes the debounce window visible so users
@@ -351,6 +444,30 @@ body[data-roi-active="true"] .timer {
   background: rgba(245, 244, 237, 0.88);       /* Parchment with slight transparency */
   border-radius: var(--radius-lg);
   box-shadow: 0 0 0 1px var(--border-warm), var(--shadow-whisper);
+  transition: opacity 220ms ease;
+}
+
+/* In hands-free phases we hide the controls so the timer owns the screen —
+   the rider is ~10m away, chrome is dead weight at that distance. Tap
+   anywhere to pop them back briefly (app.js sets .tap-revealed for 5s).
+   During observing > 20s (error) we keep them revealed so the user can
+   stop the session / repick ROI without tapping anything first. */
+body[data-phase="observing"] #controls,
+body[data-phase="armed"] #controls,
+body[data-phase="running"] #controls,
+body[data-phase="finished"] #controls,
+body[data-phase="cooldown"] #controls {
+  opacity: 0;
+  pointer-events: none;
+}
+body[data-phase="observing"] #controls.tap-revealed,
+body[data-phase="armed"] #controls.tap-revealed,
+body[data-phase="running"] #controls.tap-revealed,
+body[data-phase="finished"] #controls.tap-revealed,
+body[data-phase="cooldown"] #controls.tap-revealed,
+body[data-phase="error"] #controls {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 /* Default button — Warm Sand secondary per DESIGN.md. */

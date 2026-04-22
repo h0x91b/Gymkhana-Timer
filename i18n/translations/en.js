@@ -2,33 +2,41 @@
 export default {
   'app.title': 'Gymkhana Timer',
 
+  // Session-mode phase labels (tiny diagnostic pill; not the primary channel).
   'status.idle': 'IDLE',
-  'status.waitingStart': 'WAITING START',
+  'status.observing': 'OBSERVING',
+  'status.armed': 'ARMED',
   'status.running': 'RUNNING',
   'status.finished': 'FINISHED',
+  'status.cooldown': 'COOLDOWN',
+  'status.error': 'CHECK CAMERA',
 
   'ui.startCamera': 'Start camera',
   'ui.setRoi': 'Set ROI',
-  'ui.arm': 'Arm',
+  // The one and only button that hands control over to the hands-free loop.
+  'ui.startSession': 'Start session',
+  'ui.stopSession': 'Stop session',
   'ui.cancel': 'Cancel',
-  'ui.newRun': 'New run',
   'ui.gestureHint': 'Pinch to zoom · Two-finger drag to pan',
   'ui.threshold': 'Threshold',
   'ui.debug': 'Debug',
   'ui.language': 'Language',
-  // Shown on the in-app update button when a new service worker version is
-  // pending. Clicking it swaps the SW and reloads the page.
   'ui.update': 'Update',
-  // {fps} is the measured frame rate (integer), {ms} is half the frame interval,
-  // i.e. the per-event timing uncertainty of motion detection.
+  // {fps} is the measured frame rate, {ms} the half-frame timing uncertainty.
   'ui.fpsReadout': '{fps} FPS · ±{ms} ms',
-  // Debounce window active after a trigger; {seconds} counts down to 0.0.
-  'ui.cooldown': 'Wait {seconds}s',
+  // Secondary timer sub-line messages — all shown small under the big time.
+  'ui.readyToGo': 'Ready to go',
+  // {seconds} is the whole-second countdown (e.g. "14", "13", …) during the
+  // 15-second between-runs cooldown.
+  'ui.nextInSeconds': 'Next run in {seconds}s',
+  'ui.observing': 'Waiting for clear frame…',
+  'ui.error.observingStuck': 'ROI not stable. Check the camera.',
+  'ui.previousRun': 'Previous: {seconds}s',
 
   'voice.start': 'Start',
   'voice.finish': 'Finish. {seconds} seconds',
+  'voice.readyToGo': 'Ready to go',
 
-  // Plural example for future use (run history UI).
   'history.runCount_one': '{count} run',
   'history.runCount_other': '{count} runs',
 };

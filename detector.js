@@ -2,6 +2,9 @@
 // - setRoi({x, y, w, h}) in video-pixel coordinates
 // - captureReference() grabs the next N frames to build a reference image
 // - process(video, metadata) returns true iff motion crossed threshold (respects cooldown)
+// - observeStillness(video) returns frame-to-frame delta ratio (no reference
+//   needed). Used by the session-mode OBSERVING state to decide when the ROI
+//   has been empty long enough to safely capture a new reference and arm.
 
 const REFERENCE_FRAMES = 5;
 const COOLDOWN_SECONDS = 3;
@@ -25,6 +28,13 @@ export class Detector {
     this._scale = 1;
     this._downW = 0;
     this._downH = 0;
+
+    // Rolling previous-frame snapshot used by observeStillness() to measure
+    // frame-to-frame delta without needing a reference. Kept separate from
+    // `reference` so an OBSERVING-phase stability check cannot pollute the
+    // reference that process() will use after arming.
+    this._prevGray = null;
+    this._prevStillnessRatio = 1;
   }
 
   setRoi(roi) {
@@ -49,6 +59,49 @@ export class Detector {
     this.reference = null;
     this._refAccum = null;
     this._refCount = 0;
+  }
+
+  // True once captureReference() has completed (REFERENCE_FRAMES averaged).
+  // Used by app.js to decide when OBSERVING can hand off to ARMED — we need a
+  // valid reference in place before we start trusting process() triggers.
+  hasReference() {
+    return this.reference !== null;
+  }
+
+  // Frame-to-frame stillness probe. Returns the ratio of pixels that changed
+  // vs. the previous captured frame; 0 = perfectly still, 1 = fully different.
+  // Ignores cooldown/threshold entirely — this is an information channel for
+  // app.js, not a trigger. Must be called on every frame during OBSERVING so
+  // the internal "previous" snapshot stays fresh.
+  observeStillness(video) {
+    if (!this.roi) return 1;
+    const gray = this._readRoiGray(video);
+    if (!this._prevGray) {
+      this._prevGray = gray;
+      return 1;
+    }
+    let moved = 0;
+    for (let i = 0; i < gray.length; i++) {
+      if (Math.abs(gray[i] - this._prevGray[i]) > this.pixelDiffThreshold) moved++;
+    }
+    const ratio = moved / gray.length;
+    this._prevGray = gray;
+    this._prevStillnessRatio = ratio;
+    return ratio;
+  }
+
+  // Last stillness ratio reported by observeStillness(). For debug overlays.
+  lastStillnessRatio() {
+    return this._prevStillnessRatio;
+  }
+
+  // Forget the previous-frame snapshot so the next observeStillness() call
+  // starts fresh. Call this on phase transitions (e.g. when leaving FINISHED
+  // for COOLDOWN) so a stale snapshot from two phases ago does not dominate
+  // the first stillness reading of the new phase.
+  resetStillness() {
+    this._prevGray = null;
+    this._prevStillnessRatio = 1;
   }
 
   _readRoiGray(video) {
@@ -109,6 +162,6 @@ export class Detector {
   }
 
   debugLine() {
-    return `ratio=${this._lastRatio.toFixed(3)} thr=${this.threshold.toFixed(2)} ref=${this.reference ? 'ok' : 'building'}`;
+    return `ratio=${this._lastRatio.toFixed(3)} still=${this._prevStillnessRatio.toFixed(3)} thr=${this.threshold.toFixed(2)} ref=${this.reference ? 'ok' : 'building'}`;
   }
 }

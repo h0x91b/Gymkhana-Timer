@@ -1,5 +1,43 @@
 // Main entry: wires UI, camera, detector, timer, storage, i18n.
-// State machine: IDLE -> WAITING_START -> RUNNING -> FINISHED -> IDLE (on reset)
+//
+// Hands-free session lifecycle (the core UX contract — see AGENTS.md →
+// "Session mode" and TZ.md → "Hands-free session mode"):
+//
+//   IDLE
+//     └── user taps "Start session" (once, after the manual camera+ROI setup)
+//   OBSERVING
+//     │    detector.observeStillness() probes frame-to-frame delta;
+//     │    once the ROI has been empty/still for STABILITY_DURATION seconds
+//     │    we call detector.captureReference() and wait for it to finish
+//     │    building the averaged reference (REFERENCE_FRAMES).
+//     │    If > OBSERVING_ERROR_TIMEOUT seconds pass without stability, the
+//     │    signal phase flips to "error" (bright coral background) while
+//     │    logic stays in OBSERVING — the rider will notice and intervene.
+//     └── reference built
+//   ARMED
+//     │    detector.process() is trusted; first motion trigger starts a run.
+//     │    Phase = "armed" (lime-green background, slow pulse).
+//     └── motion detected
+//   RUNNING
+//     │    timer.start() ticks live. Background drops to neutral parchment
+//     │    — we don't want the rider's eye yanked around mid-run.
+//     └── second motion trigger (after detector cooldown)
+//   FINISHED
+//     │    timer.stop(elapsed) freezes the true mediaTime-based result,
+//     │    voice announces "finish, N.N seconds", run saved to storage,
+//     │    phase briefly flashes ivory.
+//     └── FINISHED_FLASH seconds elapse
+//   COOLDOWN (15s)
+//     │    Big timer keeps the last run's time displayed. Sub-line shows a
+//     │    whole-second countdown ("Next run in 14s … 13s"). Phase = "cooldown"
+//     │    (amber background). After 15s we loop back to OBSERVING. The
+//     │    rider NEVER has to walk up to the phone in this loop — that's
+//     │    the whole point.
+//     └── 15s done
+//   OBSERVING → ARMED → …
+//
+// Stop session is the only thing that exits the loop; a tap anywhere during
+// hands-free reveals the controls briefly so the rider can hit it.
 
 import { Camera } from './camera.js';
 import { Detector } from './detector.js';
@@ -19,17 +57,30 @@ import {
 } from './i18n/index.js';
 
 const STATE = Object.freeze({
-  IDLE: 'IDLE',
-  WAITING_START: 'WAITING_START',
-  RUNNING: 'RUNNING',
-  FINISHED: 'FINISHED',
+  IDLE: 'IDLE',           // pre-session; also after Stop session
+  OBSERVING: 'OBSERVING', // session running; waiting for stable ROI + reference
+  ARMED: 'ARMED',         // reference captured, waiting for first motion
+  RUNNING: 'RUNNING',     // actively timing a run
+  FINISHED: 'FINISHED',   // brief post-finish flash
+  COOLDOWN: 'COOLDOWN',   // 15s between-runs countdown
+  ERROR: 'ERROR',         // not a true state — a visual overlay on OBSERVING
 });
+
+// Hands-free timing parameters. Tuned for gymkhana practice outdoors.
+// See AGENTS.md → "Session mode" for the rationale.
+const STABILITY_THRESHOLD = 0.04;        // ≤ 4% pixel delta between frames = "still"
+const STABILITY_DURATION = 2.0;          // seconds of continuous stillness to arm
+const OBSERVING_ERROR_TIMEOUT = 20.0;    // seconds; past this OBSERVING flips to coral "come over" signal
+const BETWEEN_RUNS_COOLDOWN = 15.0;      // seconds between FINISHED and the next OBSERVING
+const FINISHED_FLASH = 1.0;              // seconds of ivory flash right after finish
+const TAP_REVEAL_MS = 5000;              // controls stay visible this long after a tap during hands-free
 
 const els = {
   video: document.getElementById('cam'),
   overlay: document.getElementById('overlay'),
   roiView: document.getElementById('roi-view'),
   timer: document.getElementById('timer'),
+  timerSubline: document.getElementById('timer-subline'),
   status: document.getElementById('status'),
   fpsReadout: document.getElementById('fps-readout'),
   cooldown: document.getElementById('cooldown'),
@@ -38,7 +89,7 @@ const els = {
   debug: document.getElementById('debug'),
   btnStartCamera: document.getElementById('btn-start-camera'),
   btnSetRoi: document.getElementById('btn-set-roi'),
-  btnArm: document.getElementById('btn-arm'),
+  btnSession: document.getElementById('btn-session'),
   btnUpdate: document.getElementById('btn-update'),
   versionBadge: document.getElementById('version-badge'),
   threshold: document.getElementById('threshold'),
@@ -46,6 +97,7 @@ const els = {
   langSelect: document.getElementById('lang-select'),
   viewport: document.getElementById('viewport'),
   gestureHint: document.getElementById('gesture-hint'),
+  controls: document.getElementById('controls'),
 };
 
 const roiViewCtx = els.roiView.getContext('2d');
@@ -69,6 +121,18 @@ let wakeLock = null;
 // ever started the camera in this session. Without this flag we'd grab a
 // lock on page load, which is wasteful and not what the user asked for.
 let wakeLockDesired = false;
+
+// Session-loop bookkeeping. All time values are frame mediaTime (seconds),
+// NOT performance.now() / Date.now(). The frame clock is the source of truth
+// for every timing-sensitive decision we make — see TZ.md "Timing".
+let sessionActive = false;
+let observingStartedAt = 0;      // when we last entered OBSERVING
+let stableSince = 0;             // mediaTime when the current stillness streak began (0 = broken)
+let cooldownStartedAt = 0;       // mediaTime when we entered COOLDOWN
+let finishedFlashUntil = 0;      // mediaTime after which FINISHED transitions to COOLDOWN
+let lastFrameMediaTime = 0;      // last frame's mediaTime, cached for non-frame callers
+let lastRunElapsed = null;       // seconds; shown on the big timer between runs
+let tapRevealTimer = 0;          // setTimeout handle for controls auto-hide
 
 // FPS / timing-precision tracking.
 // Rolling buffer of the last N frame intervals (seconds), sourced from
@@ -120,10 +184,10 @@ function applyTranslations() {
   }
   // Status element has a dynamic key — re-resolve from its current data-status.
   els.status.textContent = t(statusKey(els.status.dataset.status));
-  // The Arm button label is state-dependent (Arm / Cancel / New run) and is
-  // kept in sync via its own data-i18n-key; re-render it explicitly so a
-  // language switch mid-state picks up the right translation.
-  refreshArmButton();
+  // The session button is "Start session" vs "Stop session" depending on
+  // whether the hands-free loop is active. Its label is swapped via the
+  // data-i18n-key on the same element; re-render on locale change.
+  refreshSessionButton();
   // FPS readout uses interpolation — re-render with the last measured values.
   if (!els.fpsReadout.hidden) {
     els.fpsReadout.textContent = t('ui.fpsReadout', {
@@ -131,13 +195,11 @@ function applyTranslations() {
       ms: fpsLastPrecisionMs,
     });
   }
-  // Cooldown text also uses interpolation; render a zero-state placeholder
-  // so the label is already localized before the first countdown frame.
-  // While the cooldown is actively counting down, the next onFrame will
-  // overwrite this within one frame, so no visible flicker.
-  if (els.cooldown.hidden) {
-    els.cooldownText.textContent = t('ui.cooldown', { seconds: '0.0' });
-  }
+  // The timer sub-line (15s countdown, "ready to go", previous run time)
+  // pulls its text from translations on every frame during the session;
+  // force an immediate re-render so a mid-session language swap doesn't
+  // leave a stale string visible for up to one frame.
+  updateSubline(lastFrameMediaTime);
   document.documentElement.lang = getLocale();
 }
 
@@ -156,39 +218,51 @@ function setState(next) {
   state = next;
   els.status.dataset.status = next;
   els.status.textContent = t(statusKey(next));
-  refreshArmButton();
+  updatePhase();
+  refreshSessionButton();
 }
 
-// The Arm button is the only lifecycle control in the bottom row — it changes
-// label and behavior per state so we don't need a separate Reset button:
-//   IDLE          → "Arm"        — enabled when a ROI has been set. Starts a run.
-//   WAITING_START → "Cancel"     — always enabled. Aborts the arm, back to IDLE.
-//   RUNNING       → "Arm"        — disabled. Can't touch mid-run.
-//   FINISHED      → "New run"    — enabled. Re-arms instantly (same ROI, fresh ref).
-function refreshArmButton() {
-  const btn = els.btnArm;
-  let key;
-  let enabled;
-  let primary = true;
-  if (state === STATE.WAITING_START) {
-    key = 'ui.cancel';
-    enabled = true;
-  } else if (state === STATE.RUNNING) {
-    key = 'ui.arm';
-    enabled = false;
-  } else if (state === STATE.FINISHED) {
-    key = 'ui.newRun';
-    enabled = true;
-  } else {
-    // IDLE
-    key = 'ui.arm';
-    // Enabled iff a ROI has been captured by the detector.
-    enabled = Boolean(currentRoi);
-  }
+// Single lifecycle button at the bottom:
+//   IDLE (pre-session), ROI ready     → "Start session" — enters hands-free loop.
+//   IDLE, ROI not ready               → disabled (need to pick a ROI first).
+//   Any in-session state              → "Stop session" — exits the loop.
+function refreshSessionButton() {
+  const btn = els.btnSession;
+  const key = sessionActive ? 'ui.stopSession' : 'ui.startSession';
   btn.dataset.i18nKey = key;
   btn.textContent = t(key);
-  btn.disabled = !enabled;
-  btn.classList.toggle('primary', primary);
+  // Stop is always clickable while the session runs; Start needs a ROI.
+  btn.disabled = !sessionActive && !currentRoi;
+  btn.classList.add('primary');
+}
+
+// Apply the data-phase attribute that drives the signal-background CSS.
+// The phase is derived from state + wall-time spent in OBSERVING so the
+// rider sees a bright-coral "come over" cue once we've been stuck looking
+// for a clean frame for more than OBSERVING_ERROR_TIMEOUT seconds.
+function updatePhase() {
+  let phase;
+  if (!sessionActive) {
+    // Before/after a session we're in manual-setup territory. The parchment
+    // default is shown and the controls panel is visible.
+    phase = 'setup';
+  } else {
+    switch (state) {
+      case STATE.OBSERVING: {
+        const elapsed = lastFrameMediaTime - observingStartedAt;
+        phase = elapsed > OBSERVING_ERROR_TIMEOUT ? 'error' : 'observing';
+        break;
+      }
+      case STATE.ARMED:    phase = 'armed'; break;
+      case STATE.RUNNING:  phase = 'running'; break;
+      case STATE.FINISHED: phase = 'finished'; break;
+      case STATE.COOLDOWN: phase = 'cooldown'; break;
+      default:             phase = 'setup';
+    }
+  }
+  if (document.body.dataset.phase !== phase) {
+    document.body.dataset.phase = phase;
+  }
 }
 
 async function requestWakeLock() {
@@ -308,15 +382,15 @@ window.addEventListener('resize', resizeRoiViewCanvas);
 window.addEventListener('orientationchange', resizeRoiViewCanvas);
 
 /**
- * Show/hide the cooldown pill and update its countdown + progress bar.
- * Only relevant while the run is actively expecting triggers
- * (WAITING_START or RUNNING) — during IDLE/FINISHED the indicator stays hidden.
+ * Keep the small debug cooldown pill in sync with the detector's post-trigger
+ * debounce window (3s). This is a developer affordance — the rider at 10m
+ * doesn't use it — so we only surface it while debug mode is on AND we are
+ * actively expecting a trigger (ARMED or RUNNING).
  */
 function updateCooldownIndicator(mediaTime) {
   const remaining = detector.cooldownRemaining(mediaTime);
-  const active =
-    remaining > 0 &&
-    (state === STATE.WAITING_START || state === STATE.RUNNING);
+  const showable = state === STATE.ARMED || state === STATE.RUNNING;
+  const active = remaining > 0 && showable && els.debugToggle.checked;
 
   if (!active) {
     if (!els.cooldown.hidden) els.cooldown.hidden = true;
@@ -324,11 +398,126 @@ function updateCooldownIndicator(mediaTime) {
   }
 
   els.cooldown.hidden = false;
-  els.cooldownText.textContent = t('ui.cooldown', {
-    seconds: remaining.toFixed(1),
-  });
+  els.cooldownText.textContent = remaining.toFixed(1) + 's';
   const pct = Math.max(0, Math.min(100, (remaining / detector.cooldownSeconds) * 100));
   els.cooldownFill.style.width = `${pct}%`;
+}
+
+// The secondary read-out under the big timer. Content is purely a function of
+// state + time; kept intentionally short so a rider can glance at it from
+// across the lot and understand it in a single fixation.
+function updateSubline(mediaTime) {
+  const el = els.timerSubline;
+  if (!sessionActive) {
+    el.hidden = true;
+    return;
+  }
+  let text = '';
+  let visible = true;
+  switch (state) {
+    case STATE.OBSERVING: {
+      const elapsed = mediaTime - observingStartedAt;
+      text = elapsed > OBSERVING_ERROR_TIMEOUT
+        ? t('ui.error.observingStuck')
+        : t('ui.observing');
+      break;
+    }
+    case STATE.ARMED:
+      text = t('ui.readyToGo');
+      break;
+    case STATE.RUNNING:
+      if (lastRunElapsed != null) {
+        text = t('ui.previousRun', { seconds: lastRunElapsed.toFixed(2) });
+      } else {
+        visible = false;
+      }
+      break;
+    case STATE.COOLDOWN: {
+      const remaining = Math.max(0, BETWEEN_RUNS_COOLDOWN - (mediaTime - cooldownStartedAt));
+      text = t('ui.nextInSeconds', { seconds: Math.ceil(remaining) });
+      break;
+    }
+    case STATE.FINISHED:
+    default:
+      visible = false;
+  }
+  el.hidden = !visible;
+  if (visible) el.textContent = text;
+}
+
+// Hands-free loop state transitions. Each helper is the one place that knows
+// how to enter its phase — centralised so we can add side effects (voice
+// cues, detector resets, background signal) without hunting through onFrame.
+
+function enterObserving(mediaTime) {
+  detector.captureReference();    // next process() calls will rebuild the averaged reference
+  detector.resetStillness();      // fresh previous-frame snapshot for stillness probing
+  observingStartedAt = mediaTime;
+  stableSince = 0;
+  setState(STATE.OBSERVING);
+}
+
+function enterArmed() {
+  setState(STATE.ARMED);
+  timer.speak(t('voice.readyToGo'));
+}
+
+function enterRunning(mediaTime) {
+  t0 = mediaTime;
+  startedAt = Date.now();
+  timer.start(t0);
+  timer.speak(t('voice.start'));
+  setState(STATE.RUNNING);
+}
+
+function enterFinished(elapsed, mediaTime) {
+  timer.stop(elapsed);
+  lastRunElapsed = elapsed;
+  timer.speak(t('voice.finish', { seconds: elapsed.toFixed(2) }));
+  storage.save({ elapsed, startedAt, finishedAt: Date.now() });
+  finishedFlashUntil = mediaTime + FINISHED_FLASH;
+  setState(STATE.FINISHED);
+}
+
+function enterCooldown(mediaTime) {
+  cooldownStartedAt = mediaTime;
+  setState(STATE.COOLDOWN);
+}
+
+function startSession() {
+  if (sessionActive) return;
+  if (!currentRoi) return;        // defensive — button should already be disabled
+  sessionActive = true;
+  // Seed the big number with the previous run's time (if any) so the rider
+  // sees something meaningful on transition rather than a stale "0.000".
+  const runs = storage.load();
+  if (runs.length > 0) {
+    lastRunElapsed = runs[runs.length - 1].elapsed;
+    timer.set(lastRunElapsed);
+  } else {
+    lastRunElapsed = null;
+    timer.set(0);
+  }
+  enterObserving(lastFrameMediaTime);
+  refreshSessionButton();
+}
+
+function stopSession() {
+  if (!sessionActive) return;
+  sessionActive = false;
+  timer.reset();                  // cancels any live tick
+  stableSince = 0;
+  setState(STATE.IDLE);           // also clears the phase via updatePhase()
+  refreshSessionButton();
+  // If a stop came in during RUNNING, the last partially-observed elapsed is
+  // stale — drop it so the sub-line doesn't show a half-finished number next
+  // session. (lastRunElapsed is re-seeded from storage on the next
+  // startSession() anyway; this is just the in-memory copy.)
+  if (tapRevealTimer) {
+    clearTimeout(tapRevealTimer);
+    tapRevealTimer = 0;
+  }
+  els.controls.classList.remove('tap-revealed');
 }
 
 function drawRoiView(video) {
@@ -352,37 +541,87 @@ function onFrame(frame, metadata) {
   // metadata.mediaTime is the authoritative frame timestamp (seconds).
   // Measure FPS/precision on every frame regardless of state, so the user
   // can see current timing quality even before arming a run.
-  updateFpsReadout(metadata.mediaTime);
+  const mt = metadata.mediaTime;
+  lastFrameMediaTime = mt;
+  updateFpsReadout(mt);
   // Render the ROI crop (no-op if the user hasn't set a ROI yet).
   drawRoiView(frame);
-  // Show/tick the cooldown pill — must run each frame so the countdown is live.
-  updateCooldownIndicator(metadata.mediaTime);
+  // The small detector-cooldown pill (debug only) ticks every frame.
+  updateCooldownIndicator(mt);
 
-  if (state === STATE.IDLE || state === STATE.FINISHED) return;
+  if (sessionActive) {
+    stepSession(frame, metadata);
+  }
 
-  const triggered = detector.process(frame, metadata);
+  // Keep phase + sub-line in sync every frame — cheap, and the ERROR flip
+  // is purely time-based (OBSERVING > 20s) so we need to re-evaluate each frame.
+  updatePhase();
+  updateSubline(mt);
 
-  if (els.debug.hidden === false) {
+  if (!els.debug.hidden) {
     els.debug.textContent = detector.debugLine();
   }
+}
 
-  if (!triggered) return;
+// One frame's worth of hands-free-loop work. Split out of onFrame() so the
+// camera/FPS/HUD plumbing stays readable and so this function can focus on
+// the actual state transitions.
+function stepSession(frame, metadata) {
+  const mt = metadata.mediaTime;
 
-  if (state === STATE.WAITING_START) {
-    t0 = metadata.mediaTime;
-    startedAt = Date.now();
-    timer.start(t0);
-    timer.speak(t('voice.start'));
-    setState(STATE.RUNNING);
-    return;
-  }
+  switch (state) {
+    case STATE.OBSERVING: {
+      const still = detector.observeStillness(frame);
+      if (still < STABILITY_THRESHOLD) {
+        if (!stableSince) stableSince = mt;
+        // Stable for long enough → start capturing reference. process()
+        // spends the first REFERENCE_FRAMES calls averaging; we hand off
+        // to ARMED once the reference is actually built.
+        if (mt - stableSince >= STABILITY_DURATION) {
+          detector.process(frame, metadata);
+          if (detector.hasReference()) {
+            enterArmed();
+          }
+        }
+      } else {
+        // Any movement breaks the streak; start over.
+        stableSince = 0;
+      }
+      break;
+    }
 
-  if (state === STATE.RUNNING) {
-    const elapsed = metadata.mediaTime - t0;
-    timer.stop(elapsed);
-    timer.speak(t('voice.finish', { seconds: elapsed.toFixed(2) }));
-    storage.save({ elapsed, startedAt, finishedAt: Date.now() });
-    setState(STATE.FINISHED);
+    case STATE.ARMED: {
+      if (detector.process(frame, metadata)) {
+        enterRunning(mt);
+      }
+      break;
+    }
+
+    case STATE.RUNNING: {
+      if (detector.process(frame, metadata)) {
+        enterFinished(mt - t0, mt);
+      }
+      break;
+    }
+
+    case STATE.FINISHED: {
+      if (mt >= finishedFlashUntil) {
+        enterCooldown(mt);
+      }
+      break;
+    }
+
+    case STATE.COOLDOWN: {
+      if (mt - cooldownStartedAt >= BETWEEN_RUNS_COOLDOWN) {
+        enterObserving(mt);
+      }
+      break;
+    }
+
+    default:
+      // IDLE inside a session should be unreachable; guard just in case
+      // (e.g. if stopSession() fires mid-frame we'll land here for one tick).
+      break;
   }
 }
 
@@ -396,17 +635,12 @@ els.btnStartCamera.addEventListener('click', async () => {
 });
 
 els.btnSetRoi.addEventListener('click', async () => {
-  // Re-show the full camera so the user can see what they're selecting.
-  // Clear ROI first so refreshArmButton sees no ROI when state flips to IDLE.
+  // Re-picking the ROI implies re-configuring the camera — any active session
+  // must stop first so its reference frame + observing streak don't get
+  // inherited into the new ROI (which would be nonsense).
+  if (sessionActive) stopSession();
   deactivateRoiView();
-  // If a run was mid-flight, cancel it first — picking a new ROI restarts
-  // the workflow cleanly.
-  if (state !== STATE.IDLE) {
-    timer.reset();
-    setState(STATE.IDLE);
-  } else {
-    refreshArmButton();
-  }
+  refreshSessionButton();
   // Pinch-zoom stays active during the pick — that's the whole point.
   // RoiPicker uses viewport.cssToIntrinsic(), so taps are always recorded
   // in the untransformed coordinate system regardless of current zoom.
@@ -419,24 +653,44 @@ els.btnSetRoi.addEventListener('click', async () => {
   );
   detector.setRoi(videoRoi);
   activateRoiView(videoRoi);
-  refreshArmButton();
+  refreshSessionButton();
 });
 
-// Single Arm button that means different things per state.
-els.btnArm.addEventListener('click', () => {
-  if (state === STATE.WAITING_START) {
-    // Cancel a pending arm — go back to IDLE, ROI stays captured.
-    timer.reset();
-    setState(STATE.IDLE);
-    return;
+// Session lifecycle button. Label swaps between "Start session" and
+// "Stop session" via refreshSessionButton(); the click handler just toggles.
+els.btnSession.addEventListener('click', () => {
+  if (sessionActive) {
+    stopSession();
+  } else {
+    // Ensure the detector uses whatever threshold the user currently has on
+    // the slider — that's the only per-session knob in the fast path.
+    detector.setThreshold(parseFloat(els.threshold.value));
+    startSession();
   }
-  // IDLE or FINISHED → arm a new run. Re-capture reference so ambient-light
-  // drift between runs doesn't poison the diff.
-  detector.captureReference();
-  detector.setThreshold(parseFloat(els.threshold.value));
-  timer.reset();
-  setState(STATE.WAITING_START);
 });
+
+// During hands-free, the controls panel is hidden so the timer owns the
+// screen. Any tap on the viewport (not on the controls themselves) reveals
+// the panel for TAP_REVEAL_MS — long enough to read and press Stop session,
+// short enough that an accidental tap mid-run doesn't leave Stop exposed
+// for the rest of the session.
+document.body.addEventListener('pointerdown', (ev) => {
+  if (!sessionActive) return;
+  // Taps on the controls panel keep it visible (don't restart the timer on
+  // a click inside the panel — that'd stop the hide from kicking in if the
+  // user takes a moment to scroll the threshold slider).
+  if (els.controls.contains(ev.target)) return;
+  revealControls();
+}, { passive: true });
+
+function revealControls() {
+  els.controls.classList.add('tap-revealed');
+  if (tapRevealTimer) clearTimeout(tapRevealTimer);
+  tapRevealTimer = setTimeout(() => {
+    els.controls.classList.remove('tap-revealed');
+    tapRevealTimer = 0;
+  }, TAP_REVEAL_MS);
+}
 
 // Surface a brief "pinch to zoom · two-finger drag to pan" hint after the
 // camera comes on, so the rider discovers the gesture without cluttering
@@ -465,6 +719,7 @@ els.threshold.addEventListener('input', () => {
 
 els.debugToggle.addEventListener('change', () => {
   els.debug.hidden = !els.debugToggle.checked;
+  document.body.dataset.debug = String(els.debugToggle.checked);
 });
 
 els.langSelect.addEventListener('change', () => {
@@ -477,7 +732,23 @@ onLocaleChange(applyTranslations);
 populateLangSelect();
 applyTranslations();
 setState(STATE.IDLE);
+// Seed the big number with the last run's time from storage — TZ.md §"Идея"
+// places "previous run time visible even before a fresh session" on the main
+// screen. On a first-ever install with an empty history we fall back to 0.000.
+(function seedTimerFromHistory() {
+  const runs = storage.load();
+  if (runs.length > 0) {
+    lastRunElapsed = runs[runs.length - 1].elapsed;
+    timer.set(lastRunElapsed);
+  }
+})();
+updatePhase();
 renderVersionBadge(els.versionBadge);
+
+// Sync the body[data-debug] flag with the debug toggle so CSS rules that
+// surface developer-only HUD elements (status pill, debug line) can key
+// off the body rather than each element separately.
+document.body.dataset.debug = String(els.debugToggle.checked);
 
 // ---------------------------------------------------------------------------
 // Service worker registration + in-app update flow.
@@ -486,9 +757,11 @@ renderVersionBadge(els.versionBadge);
 //   1. Install the SW so the app works offline and is installable as PWA.
 //   2. Detect new SW versions while the app is running and apply them without
 //      forcing the user to "clear site data" or reinstall the PWA.
-//   3. Never reload mid-run: if state is IDLE or FINISHED we auto-apply the
-//      update silently; if WAITING_START or RUNNING we show a small "Update"
-//      button in the controls row and let the rider press it when safe.
+//   3. Never reload mid-run: outside an active session (IDLE, or anything
+//      FINISHED-adjacent) we auto-apply the update silently; while the
+//      hands-free loop is live (OBSERVING / ARMED / RUNNING / FINISHED /
+//      COOLDOWN) we show a small "Update" button and let the rider press
+//      it when safe.
 //
 // Mechanics:
 //   - sw.js no longer calls skipWaiting() in 'install'; new versions sit in
@@ -566,8 +839,10 @@ function registerServiceWorker() {
 
 // Called exactly once per pending SW version. Either applies the update
 // silently (safe state) or wires up the Update button for manual apply.
+// "Safe" = not inside an active hands-free session. During a session we let
+// the rider finish and press Update themselves — no surprise reloads mid-run.
 function onUpdateReady(worker) {
-  const safe = state === STATE.IDLE || state === STATE.FINISHED;
+  const safe = !sessionActive;
   if (safe) {
     worker.postMessage({ type: 'SKIP_WAITING' });
     return;
