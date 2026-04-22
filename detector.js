@@ -25,6 +25,12 @@ export class Detector {
     this._lastTriggerAt = -Infinity;
     this.cooldownSeconds = COOLDOWN_SECONDS;
     this._lastRatio = 0;
+    // Rising-edge gate. A trigger is only accepted when the ROI has dipped
+    // back to "clear" (ratio < threshold) since the previous trigger, so a
+    // subject that lingers in the ROI past the cooldown does NOT spuriously
+    // fire a second trigger at cooldown-end. Default true so the FIRST
+    // trigger after arming is free. See decisions/009-rising-edge-trigger.md.
+    this._clearSinceTrigger = true;
     this._scale = 1;
     this._downW = 0;
     this._downH = 0;
@@ -59,6 +65,10 @@ export class Detector {
     this.reference = null;
     this._refAccum = null;
     this._refCount = 0;
+    // Fresh reference ⇒ the rising-edge gate must be open so the NEXT
+    // "clear → dirty" transition (the bike entering the ROI) fires a
+    // trigger without first needing a below-threshold reading.
+    this._clearSinceTrigger = true;
   }
 
   // True once captureReference() has completed (REFERENCE_FRAMES averaged).
@@ -136,6 +146,11 @@ export class Detector {
           ref[i] = this._refAccum[i] / this._refCount;
         }
         this.reference = ref;
+        // Reference just became valid — open the rising-edge gate so the
+        // first armed trigger is free (no need for the subject to first
+        // cross the ROI clear, which would be impossible before the first
+        // run since nothing has ever been there).
+        this._clearSinceTrigger = true;
       }
       return false;
     }
@@ -148,10 +163,31 @@ export class Detector {
     const ratio = moved / gray.length;
     this._lastRatio = ratio;
 
-    if (ratio < this.threshold) return false;
+    // ROI is currently clear — open the gate for the NEXT threshold crossing.
+    // Returning false is correct: a quiet ROI never triggers by itself.
+    if (ratio < this.threshold) {
+      this._clearSinceTrigger = true;
+      return false;
+    }
+
+    // ratio >= threshold from here on.
+    // Rising-edge gate: refuse to trigger if the ROI has not returned to
+    // "clear" since the previous trigger. This is the fix for the 3-second
+    // false-finish the user reported with larger zoom-as-ROI rectangles —
+    // when the bike is still mid-crossing at COOLDOWN_SECONDS, the old code
+    // fired a second trigger immediately at cooldown-end. Now we require the
+    // ROI to actually have been seen empty (subject left the frame) before
+    // the next trigger is allowed.
+    if (!this._clearSinceTrigger) return false;
+
+    // Debounce window: suppresses sub-second bouncing around the threshold
+    // during a single crossing (sensor noise, shadow edges, etc.). Distinct
+    // from the rising-edge gate above: cooldown is a time-based guard against
+    // noise chatter, rising-edge is a state-based guard against "stuck high".
     if (metadata.mediaTime - this._lastTriggerAt < COOLDOWN_SECONDS) return false;
 
     this._lastTriggerAt = metadata.mediaTime;
+    this._clearSinceTrigger = false;
     return true;
   }
 
@@ -162,6 +198,7 @@ export class Detector {
   }
 
   debugLine() {
-    return `ratio=${this._lastRatio.toFixed(3)} still=${this._prevStillnessRatio.toFixed(3)} thr=${this.threshold.toFixed(2)} ref=${this.reference ? 'ok' : 'building'}`;
+    const gate = this._clearSinceTrigger ? 'open' : 'shut';
+    return `ratio=${this._lastRatio.toFixed(3)} still=${this._prevStillnessRatio.toFixed(3)} thr=${this.threshold.toFixed(2)} ref=${this.reference ? 'ok' : 'building'} gate=${gate}`;
   }
 }
