@@ -330,36 +330,36 @@ body[data-phase="error"] .status {
 }
 body[data-debug="true"] .status { display: inline-block; }
 
-/* Cooldown indicator — Ivory pill with a terracotta progress bar that drains
-   after each detected trigger. Makes the debounce window visible so users
-   understand why a second pass within the window won't fire. */
+/* Cooldown pill — the canonical indicator for the 10-second between-runs
+   wait. Big, legible from a distance, with a draining progress bar so the
+   rider doesn't have to read the number. Only rendered during COOLDOWN;
+   outside that phase it's hidden. */
 .cooldown {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 4px;
-  min-width: 140px;
-  padding: 6px 14px;
+  gap: 8px;
+  min-width: min(60vw, 420px);
+  padding: 10px 24px;
   background: rgba(250, 249, 245, 0.92);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   box-shadow: 0 0 0 1px var(--ring-warm), var(--shadow-whisper);
   font-family: var(--font-sans);
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 1.4;
-  letter-spacing: 0.4px;
-  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.3px;
   color: var(--fg-strong);
+  text-transform: none;
 }
 
 .cooldown-text {
   text-align: center;
   font-variant-numeric: tabular-nums;
+  font-size: clamp(20px, 3.4vh, 36px);
 }
 
 .cooldown-bar {
   width: 100%;
-  height: 3px;
+  height: 6px;
   background: var(--border-warm);
   border-radius: var(--radius-sm);
   overflow: hidden;
@@ -391,27 +391,6 @@ body[data-debug="true"] .status { display: inline-block; }
   font-variant-numeric: tabular-nums;
 }
 
-/* Version badge — tiny mono readout showing the currently-running SW cache
-   version and its last-modified timestamp. Purpose is diagnostic: when
-   testing the update flow you want an unambiguous "which build is this?"
-   answer without opening DevTools. Kept very subtle so it doesn't compete
-   with the timer; lives at the end of the HUD column. */
-.version-badge {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 400;
-  line-height: 1.4;
-  letter-spacing: -0.2px;
-  color: var(--fg-on-dark);
-  background: rgba(20, 20, 19, 0.45);
-  padding: 2px 8px;
-  border-radius: var(--radius-sm);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
-  font-variant-numeric: tabular-nums;
-  opacity: 0.75;
-}
-
 /* Debug — mono, caption size. */
 .debug {
   font-family: var(--font-mono);
@@ -424,6 +403,72 @@ body[data-debug="true"] .status { display: inline-block; }
   border-radius: var(--radius-sm);
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
+}
+
+/* Debug row — collects status + FPS + detector internals into a single
+   horizontal strip instead of the stacked pills that were wasting HUD
+   height. Shown only when the Debug toggle is on. */
+.debug-row {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+}
+
+body:not([data-debug="true"]) #debug-row { display: none; }
+
+/* Run history — compact list of the last few route times, fills the empty
+   space below the timer so the rider can glance at recent performance
+   without opening a separate history screen. Each row is a small pill
+   with an ordinal and the elapsed time; rows stack vertically, latest
+   first, tabular-nums so decimals line up. */
+.run-history {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  min-width: min(56vw, 360px);
+  max-width: min(72vw, 420px);
+  padding: 10px 14px;
+  background: rgba(250, 249, 245, 0.78);
+  border-radius: var(--radius-md);
+  box-shadow: 0 0 0 1px var(--ring-warm), var(--shadow-whisper);
+  font-family: var(--font-sans);
+  color: var(--fg-strong);
+}
+
+.run-history-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  font-size: clamp(14px, 2.2vh, 20px);
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
+}
+
+.run-history-row + .run-history-row {
+  border-top: 1px solid var(--border-cream);
+  padding-top: 4px;
+}
+
+.run-history-idx {
+  color: var(--fg-3);
+  font-size: 0.85em;
+  letter-spacing: 0.4px;
+}
+
+.run-history-time {
+  font-weight: 600;
+  color: var(--fg);
+}
+
+/* First row is the most recent — nudge it visually so the rider can tell
+   the fresh result apart at a glance. */
+.run-history-row:first-child .run-history-time {
+  color: var(--terracotta);
 }
 
 /* Controls panel — sits at the bottom over the camera feed, parchment-tinted

@@ -45,7 +45,6 @@ import { RoiPicker } from './roi.js';
 import { Timer } from './timer.js';
 import { Storage } from './storage.js';
 import { Viewport } from './viewport.js';
-import { renderVersionBadge } from './version.js';
 import {
   ALL_LOCALES,
   LOCALE_LABELS,
@@ -92,7 +91,7 @@ const els = {
   btnSetRoi: document.getElementById('btn-set-roi'),
   btnSession: document.getElementById('btn-session'),
   btnUpdate: document.getElementById('btn-update'),
-  versionBadge: document.getElementById('version-badge'),
+  runHistory: document.getElementById('run-history'),
   threshold: document.getElementById('threshold'),
   debugToggle: document.getElementById('debug-toggle'),
   langSelect: document.getElementById('lang-select'),
@@ -384,24 +383,24 @@ window.addEventListener('resize', resizeRoiViewCanvas);
 window.addEventListener('orientationchange', resizeRoiViewCanvas);
 
 /**
- * Keep the small debug cooldown pill in sync with the detector's post-trigger
- * debounce window (3s). This is a developer affordance — the rider at 10m
- * doesn't use it — so we only surface it while debug mode is on AND we are
- * actively expecting a trigger (ARMED or RUNNING).
+ * Cooldown pill — the canonical 10-second between-runs indicator. The pill
+ * is intentionally prominent (bigger text, thicker bar) because it's a
+ * first-class rider-facing signal, not a debug affordance. Rendered only
+ * while we are actually in STATE.COOLDOWN.
+ *
+ * The pill is the ONLY place the 10-second countdown is displayed — during
+ * COOLDOWN the text sub-line above is suppressed so the rider has a single
+ * unambiguous read (see updateSubline).
  */
 function updateCooldownIndicator(mediaTime) {
-  const remaining = detector.cooldownRemaining(mediaTime);
-  const showable = state === STATE.ARMED || state === STATE.RUNNING;
-  const active = remaining > 0 && showable && els.debugToggle.checked;
-
-  if (!active) {
+  if (state !== STATE.COOLDOWN) {
     if (!els.cooldown.hidden) els.cooldown.hidden = true;
     return;
   }
-
+  const remaining = Math.max(0, BETWEEN_RUNS_COOLDOWN - (mediaTime - cooldownStartedAt));
   els.cooldown.hidden = false;
-  els.cooldownText.textContent = remaining.toFixed(1) + 's';
-  const pct = Math.max(0, Math.min(100, (remaining / detector.cooldownSeconds) * 100));
+  els.cooldownText.textContent = `${Math.ceil(remaining)}s`;
+  const pct = Math.max(0, Math.min(100, (remaining / BETWEEN_RUNS_COOLDOWN) * 100));
   els.cooldownFill.style.width = `${pct}%`;
 }
 
@@ -434,17 +433,45 @@ function updateSubline(mediaTime) {
         visible = false;
       }
       break;
-    case STATE.COOLDOWN: {
-      const remaining = Math.max(0, BETWEEN_RUNS_COOLDOWN - (mediaTime - cooldownStartedAt));
-      text = t('ui.nextInSeconds', { seconds: Math.ceil(remaining) });
+    case STATE.COOLDOWN:
+      // The cooldown pill (below the timer) is the authoritative countdown
+      // indicator — hide the text sub-line to avoid a redundant read.
+      visible = false;
       break;
-    }
     case STATE.FINISHED:
     default:
       visible = false;
   }
   el.hidden = !visible;
   if (visible) el.textContent = text;
+}
+
+// Render the last N runs from storage. Fills the HUD space below the timer
+// with a compact "recent results" list so the rider can compare the current
+// run to their recent history without opening a separate screen.
+const RUN_HISTORY_MAX = 5;
+function renderRunHistory() {
+  const runs = storage.load();
+  if (runs.length === 0) {
+    els.runHistory.hidden = true;
+    els.runHistory.textContent = '';
+    return;
+  }
+  // Most recent first.
+  const recent = runs.slice(-RUN_HISTORY_MAX).reverse();
+  const latestIndex = runs.length; // 1-based ordinal of the newest run
+  const rows = recent.map((run, i) => {
+    const ordinal = latestIndex - i;
+    const seconds = Number.isFinite(run.elapsed) ? run.elapsed.toFixed(2) : '—';
+    return (
+      `<div class="run-history-row">` +
+        `<span class="run-history-idx">#${ordinal}</span>` +
+        `<span class="run-history-time">${seconds}s</span>` +
+      `</div>`
+    );
+  }).join('');
+  els.runHistory.innerHTML = rows;
+  els.runHistory.hidden = false;
 }
 
 // Hands-free loop state transitions. Each helper is the one place that knows
@@ -486,6 +513,9 @@ function enterFinished(elapsed, mediaTime) {
   lastRunElapsed = elapsed;
   timer.speak(t('voice.finish', { seconds: elapsed.toFixed(2) }));
   storage.save({ elapsed, startedAt, finishedAt: Date.now() });
+  // Refresh the on-screen run history with the newly-saved run so the rider
+  // sees it in the "recent" list by the time the cooldown begins.
+  renderRunHistory();
   finishedFlashUntil = mediaTime + FINISHED_FLASH;
   setState(STATE.FINISHED);
 }
@@ -778,7 +808,7 @@ setState(STATE.IDLE);
   }
 })();
 updatePhase();
-renderVersionBadge(els.versionBadge);
+renderRunHistory();
 
 // Sync the body[data-debug] flag with the debug toggle so CSS rules that
 // surface developer-only HUD elements (status pill, debug line) can key

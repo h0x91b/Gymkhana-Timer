@@ -22,20 +22,32 @@
     <div id="hud">
       <div id="timer" class="timer">0.000</div>
       <!-- Secondary sub-line under the big timer. Renders (depending on phase):
-             COOLDOWN → "Next run in 14s" countdown
              ARMED    → "Ready to go"
              RUNNING  → "Previous: 42.35s"
              OBSERVING→ "Waiting for clear frame…" (or error variant past 20s)
-           Much smaller than the timer; lives under it, doesn't compete. -->
+           During COOLDOWN it's hidden — the cooldown pill below (draining
+           progress bar + countdown seconds) is the canonical indicator. -->
       <div id="timer-subline" class="timer-subline" hidden></div>
-      <div id="status" class="status" data-status="IDLE" data-i18n-key="status.idle">IDLE</div>
+      <!-- Cooldown pill: repurposed for the 10s session COOLDOWN countdown,
+           NOT the detector's post-trigger debounce. The progress bar drains
+           visually so the rider can gauge remaining wait without reading
+           the number. Hidden outside COOLDOWN. -->
       <div id="cooldown" class="cooldown" hidden>
         <div id="cooldown-text" class="cooldown-text"></div>
         <div class="cooldown-bar"><div id="cooldown-fill" class="cooldown-fill"></div></div>
       </div>
-      <div id="fps-readout" class="fps-readout" hidden>— FPS · ±— ms</div>
-      <div id="debug" class="debug"></div>
-      <div id="version-badge" class="version-badge" title="Service worker cache version and last-modified timestamp">—</div>
+      <!-- Last 5 runs from localStorage. Fills the empty space below the
+           timer so the rider can read recent results at a glance without
+           opening a history screen. Hidden until there's at least one run. -->
+      <div id="run-history" class="run-history" hidden></div>
+      <!-- Debug row: FPS + status + detector internals on one line. Hidden
+           unless the Debug toggle is on. Replaces the earlier stack of
+           separate pills and removes the vestigial version-badge `—` blob. -->
+      <div id="debug-row" class="debug-row">
+        <div id="status" class="status" data-status="IDLE" data-i18n-key="status.idle">IDLE</div>
+        <div id="fps-readout" class="fps-readout" hidden>— FPS · ±— ms</div>
+        <div id="debug" class="debug"></div>
+      </div>
     </div>
 
     <div id="controls" class="controls">
