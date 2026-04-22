@@ -19,4 +19,8 @@ The dev server is [`scripts/dev-server.ts`](./scripts/dev-server.ts) — a tiny 
 
 ## Testing on a phone
 
-Camera and service worker require HTTPS off `localhost`. For phone testing over LAN, tunnel the local port through `cloudflared` or `ngrok`, or deploy the repo root to any static host (GitHub Pages, Cloudflare Pages, Netlify).
+Camera and service worker require HTTPS off `localhost`. The dev server spawns a `cloudflared` quick tunnel and prints a QR automatically — scan it with your phone and you're testing over HTTPS in one step.
+
+## Production deploy
+
+Pushing to `master` publishes the app to GitHub Pages via [`.github/workflows/pages.yml`](./.github/workflows/pages.yml). One-time setup: **repo Settings → Pages → Source: GitHub Actions**. Bump `CACHE_VERSION` in [`sw.js`](./sw.js) before each release — without it, installed PWAs keep serving the previous bundle from the service-worker cache.

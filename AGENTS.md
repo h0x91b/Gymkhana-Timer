@@ -336,7 +336,12 @@ Call as `tPlural('history.runCount', count)`.
 
 ## Deploy
 
-Any static host. Known-good: GitHub Pages, Cloudflare Pages, Netlify. No build step — push the repo root. Remember to bump `CACHE_VERSION` in `sw.js`.
+Production is **GitHub Pages**, driven by [`.github/workflows/pages.yml`](./.github/workflows/pages.yml). Every push to `master` publishes the repo root via the official `actions/upload-pages-artifact` + `actions/deploy-pages` flow. No build step — assets are uploaded verbatim.
+
+- **Always bump `CACHE_VERSION` in `sw.js` before pushing a release** — otherwise installed clients keep serving the previous bundle from their service worker cache. The client-driven update flow ([`decisions/003-client-driven-sw-update.md`](./decisions/003-client-driven-sw-update.md)) needs a version change to detect anything.
+- One-time repo setup: **Settings → Pages → Source: GitHub Actions**.
+- Any other static host (Cloudflare Pages, Netlify) would work too — the app uses only relative asset paths — but there's no reason to move off Pages.
+- Rationale and alternatives: [`decisions/004-github-pages-deploy.md`](./decisions/004-github-pages-deploy.md).
 
 ## Conventions
 
