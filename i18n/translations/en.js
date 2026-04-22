@@ -26,9 +26,6 @@ export default {
   'ui.fpsReadout': '{fps} FPS · ±{ms} ms',
   // Secondary timer sub-line messages — all shown small under the big time.
   'ui.readyToGo': 'Ready to go',
-  // {seconds} is the whole-second countdown (e.g. "14", "13", …) during the
-  // 15-second between-runs cooldown.
-  'ui.nextInSeconds': 'Next run in {seconds}s',
   'ui.observing': 'Waiting for clear frame…',
   'ui.error.observingStuck': 'ROI not stable. Check the camera.',
   'ui.previousRun': 'Previous: {seconds}s',

@@ -21,7 +21,6 @@ export default {
   'ui.update': 'Обновить',
   'ui.fpsReadout': '{fps} FPS · ±{ms} мс',
   'ui.readyToGo': 'Готов к старту',
-  'ui.nextInSeconds': 'До старта {seconds}с',
   'ui.observing': 'Жду чистого кадра…',
   'ui.error.observingStuck': 'ROI не стабилизируется. Проверь камеру.',
   'ui.previousRun': 'Прошлый: {seconds}с',

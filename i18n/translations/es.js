@@ -21,7 +21,6 @@ export default {
   'ui.update': 'Actualizar',
   'ui.fpsReadout': '{fps} FPS · ±{ms} ms',
   'ui.readyToGo': 'Listo para salir',
-  'ui.nextInSeconds': 'Próxima en {seconds}s',
   'ui.observing': 'Esperando cuadro limpio…',
   'ui.error.observingStuck': 'ROI inestable. Revisa la cámara.',
   'ui.previousRun': 'Anterior: {seconds}s',
