@@ -41,7 +41,14 @@
 
 import { Camera } from './camera.js';
 import { Detector } from './detector.js';
-import { RoiPicker } from './roi.js';
+// RoiPicker (two-tap corner picker) is deliberately unused. Keeping the
+// file around for reference — the two-tap flow was replaced with
+// "zoom-as-ROI": the visible viewport (after pinch/pan) IS the ROI. See
+// the btnSetRoi handler below for the single-function conversion.
+// Reason for the switch: the tap picker raced with the Viewport pinch
+// gesture — the first finger's pointerdown fired before the second
+// finger could set `body.dataset.gesturing=true`, so a pinch always
+// registered a stray corner-tap before the zoom kicked in.
 import { Timer } from './timer.js';
 import { Storage } from './storage.js';
 import { Viewport } from './viewport.js';
@@ -97,7 +104,6 @@ const els = {
   langSelect: document.getElementById('lang-select'),
   viewport: document.getElementById('viewport'),
   gestureHint: document.getElementById('gesture-hint'),
-  roiHint: document.getElementById('roi-hint'),
   controls: document.getElementById('controls'),
 };
 
@@ -106,7 +112,6 @@ let currentRoi = null; // video-intrinsic coordinates
 
 const camera = new Camera(els.video);
 const detector = new Detector();
-const roiPicker = new RoiPicker(els.overlay);
 const timer = new Timer(els.timer);
 const storage = new Storage();
 const viewport = new Viewport(els.viewport);
@@ -135,13 +140,6 @@ let lastFrameMediaTime = 0;      // last frame's mediaTime, cached for non-frame
 let lastRunElapsed = null;       // seconds; shown on the big timer between runs
 let tapRevealTimer = 0;          // setTimeout handle for controls auto-hide
 let nextNotReadyVoiceAt = 0;     // mediaTime when we should next speak "not ready" (0 = disabled / session off)
-// Re-entry guard for the ROI pick flow. Without it, a second Set ROI tap
-// while the first pick is still waiting for its two corner taps stacks a
-// second pointerdown listener on #overlay — both listeners then race on the
-// user's taps, the first to reach two points resolves and auto-starts the
-// session, and the second pick is orphaned. Symptom the user reports:
-// "can't set ROI a second time; it just starts observing immediately".
-let pickingRoi = false;
 
 // FPS / timing-precision tracking.
 // Rolling buffer of the last N frame intervals (seconds), sourced from
@@ -707,70 +705,76 @@ els.btnStartCamera.addEventListener('click', async () => {
   showGestureHint();
 });
 
-els.btnSetRoi.addEventListener('click', beginRoiPick);
+els.btnSetRoi.addEventListener('click', commitRoiFromViewport);
 
-async function beginRoiPick() {
-  // Single-flight guard. See `pickingRoi` declaration above for the full
-  // story — TL;DR, stacking two picks races on the corner taps and the
-  // loser never resolves, so the user cannot re-pick.
-  if (pickingRoi) return;
-  pickingRoi = true;
-  // Re-picking the ROI implies re-configuring the camera — any active session
-  // must stop first so its reference frame + observing streak don't get
-  // inherited into the new ROI (which would be nonsense).
+// "Zoom-as-ROI": whatever sub-rectangle of the video is currently visible in
+// the viewport (after the rider's pinch-zoom + two-finger pan) IS the ROI.
+// No corner taps. Rationale:
+//   - The tap picker raced with the 2-finger pinch gesture: the first
+//     finger's pointerdown fired while pointers.size was still 1, so the
+//     picker registered it as a corner before the 2nd finger had a chance
+//     to flip body.dataset.gesturing. You could literally not pinch without
+//     accidentally dropping a ROI corner.
+//   - Conceptually cleaner: "what you see is what gets timed." The rider
+//     frames the gate with their fingers; tapping Set ROI just commits
+//     that frame. One button press total.
+//
+// Math: Viewport applies `translate(tx, ty) scale(z)` with origin 0,0 to a
+// wrapper of size W×H CSS px. The visible sub-rectangle in pre-transform
+// (intrinsic) CSS coords is therefore:
+//     x  = -tx / z
+//     y  = -ty / z
+//     w  =  W  / z
+//     h  =  H  / z
+// Viewport._clamp() already guarantees this stays within [0..W]×[0..H], so
+// no extra clamping is needed — we're just converting an active transform
+// back into a rectangle. mapCssRoiToVideoRoi then turns that intrinsic CSS
+// rect into the video-pixel rect the detector wants (undoes object-fit
+// cover centering/scaling).
+function commitRoiFromViewport() {
+  // Re-committing mid-session implies re-configuring the camera — stop the
+  // current session so its averaged reference frame and observing streak
+  // don't get inherited into the new ROI.
   if (sessionActive) stopSession();
   deactivateRoiView();
   refreshSessionButton();
-  // Visual state: hide the controls panel (CSS keys off data-picking-roi),
-  // show the "Tap two opposite corners" hint, and disable the button itself
-  // so a rapid re-tap can't re-enter this handler even if the guard above
-  // somehow lets it through.
-  document.body.dataset.pickingRoi = 'true';
-  els.btnSetRoi.disabled = true;
-  els.roiHint.hidden = false;
-  try {
-    // Pinch-zoom stays active during the pick — that's the whole point.
-    // RoiPicker uses viewport.cssToIntrinsic(), so taps are always recorded
-    // in the untransformed coordinate system regardless of current zoom.
-    const cssRoi = await roiPicker.pick(viewport);
-    const videoRoi = mapCssRoiToVideoRoi(
-      cssRoi,
-      els.video,
-      viewport.intrinsicWidth(),
-      viewport.intrinsicHeight(),
-    );
-    detector.setRoi(videoRoi);
-    activateRoiView(videoRoi);
-    // ROI picked ⇒ the rider has committed to the framing; there is no value
-    // in forcing a second "Start session" tap right after. Auto-enter the
-    // hands-free loop straight away — Stop session is always reachable via
-    // tap-to-reveal if they change their mind. The detector threshold is
-    // pulled from the slider as part of startSession() → enterObserving()
-    // → process() building the reference frame.
-    detector.setThreshold(parseFloat(els.threshold.value));
-    startSession();
-  } finally {
-    pickingRoi = false;
-    document.body.dataset.pickingRoi = 'false';
-    els.btnSetRoi.disabled = false;
-    els.roiHint.hidden = true;
-    refreshSessionButton();
-  }
+
+  const W = viewport.intrinsicWidth();
+  const H = viewport.intrinsicHeight();
+  const z = viewport.z;
+  const tx = viewport.tx;
+  const ty = viewport.ty;
+  const cssRoi = {
+    x: -tx / z,
+    y: -ty / z,
+    w: W / z,
+    h: H / z,
+  };
+
+  const videoRoi = mapCssRoiToVideoRoi(cssRoi, els.video, W, H);
+  detector.setRoi(videoRoi);
+  activateRoiView(videoRoi);
+  // ROI set ⇒ the rider has committed to the framing; auto-enter the
+  // hands-free loop straight away. Stop session stays reachable via
+  // tap-to-reveal. The detector threshold is pulled from the slider.
+  detector.setThreshold(parseFloat(els.threshold.value));
+  startSession();
+  refreshSessionButton();
 }
 
-// Tap the ROI thumbnail during a hands-free session to re-pick — otherwise
-// the only way to reach Set ROI is to first tap anywhere to reveal the
-// controls panel and then hunt for the button. For the primary recurring
-// adjustment (rider repositioned the camera mid-practice), a direct tap
-// on the mini-preview is the obvious gesture.
+// Tap the ROI thumbnail during a hands-free session to re-frame the ROI.
+// stopSession() + deactivateRoiView() bring the rider back to the live
+// camera with their current pinch-zoom transform preserved, so they can
+// tweak the framing before pressing Set ROI again.
 els.roiView.addEventListener('pointerdown', (ev) => {
   if (!currentRoi) return;
-  if (pickingRoi) return;
   // Stop propagation so the body listener doesn't also run revealControls()
   // — the session is about to stop anyway, and the dueling state changes
   // would flicker the controls panel in and out.
   ev.stopPropagation();
-  beginRoiPick();
+  if (sessionActive) stopSession();
+  deactivateRoiView();
+  refreshSessionButton();
 });
 
 // Session lifecycle button. Label swaps between "Start session" and
