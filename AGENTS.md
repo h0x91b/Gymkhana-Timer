@@ -149,6 +149,7 @@ bun install                # first-time only — installs the dev deps
 bun run start              # static server + cloudflared tunnel + QR + live reload
 PORT=3000 bun run start    # override port
 TUNNEL=0 bun run start     # skip the cloudflared tunnel (local-only)
+CF_PROTOCOL=quic bun run start  # force QUIC/UDP for the tunnel (default is http2 — see below)
 DEV_RELOAD=0 bun run start # skip the live-reload shim (e.g. when testing the SW itself)
 ```
 
@@ -166,6 +167,7 @@ The server injects a tiny `<script>` shim before `</body>` in every served HTML 
 - Disable for offline / local-only work: `TUNNEL=0 bun run dev`.
 - If `cloudflared` is missing, the tunnel is silently skipped and the local server keeps working.
 - Each run gets a fresh subdomain — don't bookmark it, just scan the new QR each time.
+- The tunnel uses **HTTP/2** (TCP/7844) by default, not QUIC (UDP/7844). Many residential ISPs, mobile carriers, and office firewalls drop or heavily rate-limit UDP/7844, which leaves `cloudflared` stuck in a `failed to dial to edge with quic: timeout` retry loop — the `trycloudflare.com` URL prints but the page never loads. Override with `CF_PROTOCOL=quic bun run start` if you're on a network where UDP works.
 
 Rationale and alternatives considered: [`decisions/002-dev-server-cloudflared-tunnel.md`](./decisions/002-dev-server-cloudflared-tunnel.md).
 
