@@ -75,9 +75,12 @@ export function tPlural(baseKey, count, vars) {
 export function statusKey(status) {
   switch (status) {
     case 'IDLE': return 'status.idle';
-    case 'WAITING_START': return 'status.waitingStart';
+    case 'OBSERVING': return 'status.observing';
+    case 'ARMED': return 'status.armed';
     case 'RUNNING': return 'status.running';
     case 'FINISHED': return 'status.finished';
+    case 'COOLDOWN': return 'status.cooldown';
+    case 'ERROR': return 'status.error';
     default: return 'status.idle';
   }
 }

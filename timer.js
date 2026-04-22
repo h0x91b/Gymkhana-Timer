@@ -38,6 +38,14 @@ export class Timer {
     this._render(0);
   }
 
+  // Display a static value without starting/stopping the ticking animation.
+  // Used to seed the big readout with the last run's time so the rider
+  // can see their previous result between runs (and on a fresh app load).
+  set(seconds) {
+    if (this._running) return; // don't clobber a live tick
+    this._render(seconds);
+  }
+
   speak(text) {
     if (!('speechSynthesis' in window)) return;
     const u = new SpeechSynthesisUtterance(text);

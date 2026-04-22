@@ -6,7 +6,9 @@ This file is the canonical agent/contributor guide for this repo.
 
 ## What this project is
 
-A PWA that times motorcycle gymkhana runs by watching the start/finish line through the phone's camera. The phone sits on a tripod and **does not move** during a run — that invariant is what makes detection simple.
+A PWA that times motorcycle gymkhana **routes** by watching the start/finish line through the phone's camera. A route is a course the rider enters and exits through the same line — it is **not** a lap. The word `lap` must not appear in user-facing copy or docs; use `route` or `run` instead. The phone sits on a tripod and **does not move** during a run — that invariant is what makes detection simple.
+
+After an initial manual setup (camera + ROI), the app runs **hands-free**: the rider never walks back to the phone between runs. Auto re-arm is the core UX contract, not an optional feature — see [Session mode](#session-mode-hands-free-lifecycle) below.
 
 Full spec: [`TZ.md`](./TZ.md). Read it before making non-trivial changes.
 
@@ -72,7 +74,7 @@ The user communicates in Russian; agents reply in Russian. But anything persiste
 
 ```
 index.html        UI shell: <video>, <canvas> overlay, controls
-app.js            entry + state machine (IDLE → WAITING_START → RUNNING → FINISHED)
+app.js            entry + session-mode state machine (IDLE → OBSERVING → ARMED → RUNNING → FINISHED → COOLDOWN → OBSERVING …)
 camera.js         getUserMedia + requestVideoFrameCallback wrapper
 detector.js       background subtraction on a downscaled ROI
 roi.js            tap-to-pick ROI on the overlay
@@ -86,7 +88,36 @@ change-logs/      one entry per session (see below)
 decisions/        architectural decision records (see below)
 ```
 
-State machine lives in `app.js`. The detector is stateless w.r.t. the run — it only reports "motion crossed threshold" with a cooldown; `app.js` interprets the first trigger as start, the second as finish.
+State machine lives in `app.js`. The detector is stateless w.r.t. the run — it only reports "motion crossed threshold" with a cooldown; `app.js` interprets the first trigger as start, the second as finish, and handles the hands-free session loop around those two events.
+
+## Session mode (hands-free lifecycle)
+
+The app's entire value is "don't make the rider walk back to the phone between runs." Any UI change must preserve this. Full spec lives in [`TZ.md` → Hands-free session mode](./TZ.md#hands-free-session-mode-основной-режим-эксплуатации); the rules agents must always honor:
+
+- **Single entry point after setup.** One button — `Start session` — hands control over to the auto loop. No `Arm` / `Reset` buttons in the hot path.
+- **States:** `IDLE` → `OBSERVING` → `ARMED` → `RUNNING` → `FINISHED` → `COOLDOWN(15s)` → `OBSERVING` → `ARMED` → … The rider never triggers a transition manually except `Start session` and `Stop session`.
+- **Auto re-arm trigger:** 15-second cooldown after `FINISHED`, then `OBSERVING` waits until the ROI is empty and stable for ≥ 2 seconds, captures a fresh reference frame (compensates ambient-light drift), and moves to `ARMED`.
+- **Timer is the king of the screen.** In every post-setup state the route timer fills ~50vh, center, `--font-serif`, `font-variant-numeric: tabular-nums`. Status is communicated by timer colour, not a separate large label.
+- **Timer content by state:**
+  - `RUNNING` — live elapsed time (ticking).
+  - `FINISHED`, `COOLDOWN`, `OBSERVING`, `ARMED` — the **last completed route time** stays displayed unchanged until the next `RUNNING` start; never auto-reset to zero.
+  - First-ever `OBSERVING`/`ARMED` in a session with no prior run — `0.000` placeholder.
+- **Secondary readout** (smaller, below the timer):
+  - `COOLDOWN` — 15s countdown, reverse, tabular-nums.
+  - `ARMED` — label `Ready to go` (localized), replaces the countdown once it hits zero.
+  - `RUNNING` — previous route time, de-emphasized, so the rider can compare on the fly.
+- **Voice cues** (primary remote feedback channel, since the phone is far from the rider):
+  - `start` on first trigger,
+  - `finish, N.N seconds` on second trigger,
+  - `ready to go` when `COOLDOWN` completes and `ARMED` is reached.
+- **Stop session is an overlay, not a persistent button.** Controls hide after session start; a tap anywhere reveals them briefly. This prevents accidental stops during a run but keeps the escape hatch obvious.
+- **Daylight signal colours drive the background, not decorative labels.** Pure traffic-light saturation — not pastel, not muted, no brand compromise. `--signal-go` (pure green `#00d851`) on `ARMED`, `--signal-wait` (pure orange `#ff8c00`) on `COOLDOWN` and the first 20 s of `OBSERVING`, `--signal-error` (pure red `#ff2020`) once `OBSERVING` exceeds 20 s, `--parchment` on `RUNNING`. The full viewport is tinted — small pills do not survive the 10-metre test. Full contract lives in [`DESIGN.md` §0.1](./DESIGN.md#01-signal-background-colour-system).
+- **No animation on `ARMED`.** Tried a gentle pulse; at 10 m it read as distracting flicker rather than confirmation. Saturated green on its own is the signal.
+- **Voice keeps the rider in sync when the eyes are elsewhere.** While the session is active but not yet `ARMED` (`OBSERVING` or error-visual), the app says `not ready` every 15 s. Plus the existing `start` / `finish, N.N seconds` / `ready to go` cues.
+- **ROI preview shrinks to a corner thumbnail** in every hands-free phase (lower-left, ~`20vw × 15vh`). The rider still wants to self-check framing; they do **not** want it competing with the timer. Full-screen ROI only during `setup`.
+- **No explicit "Start session" button.** As soon as the ROI is picked, the app enters the hands-free loop. The session toggle at the bottom shows `Stop session` only (revealed briefly on tap); this keeps the setup flow to the minimum two taps — `Start camera` → `Set ROI`.
+
+Anything that violates these rules is a regression even if other tests pass.
 
 ## Timing — read this before touching timer code
 
@@ -100,7 +131,7 @@ State machine lives in `app.js`. The detector is stateless w.r.t. the run — it
 - `getImageData` on a full frame is slow. Always read only the ROI, downscaled to ≤ ~240 px on the long side before diffing.
 - False triggers: shadows at low sun angle, other riders/people/birds in frame, cloud shadows shifting ambient light. Mitigations in `detector.js`: narrow ROI, tunable `threshold`, 1–2 s cooldown after each trigger.
 - Cooldown is critical — without it the bike's own motion between the two finish-line cones fires start and finish on the same pass.
-- Reference frame is averaged over the first N frames after arming to smooth sensor noise. If ambient light drifts over a long session, re-arm between runs.
+- Reference frame is averaged over the first N frames after arming to smooth sensor noise. In session mode, every `OBSERVING → ARMED` transition captures a fresh reference once the ROI is stable for ≥ 2 seconds — that's the built-in compensation for ambient-light drift over a long practice session, so there is no need for the rider to re-arm manually.
 
 ## PWA
 
@@ -270,7 +301,7 @@ All user-facing strings MUST be localized. The i18n system lives in [`i18n/`](./
 ```js
 import { t, tPlural, getLocale, setLocale, onLocaleChange, statusKey } from './i18n/index.js';
 
-t('ui.arm');                                  // → "Arm" / "Готов" / "Armar"
+t('ui.startSession');                         // → "Start session" / "Начать сессию" / "Iniciar sesión"
 t('voice.finish', { seconds: '42.3' });       // → "Finish. 42.3 seconds"
 tPlural('history.runCount', 3);               // picks _one/_few/_many/_other automatically
 setLocale('ru');                              // persists to localStorage("gymkhana-locale")
@@ -282,7 +313,7 @@ onLocaleChange(() => rerender());             // subscribe to changes
 Any element with `data-i18n-key="..."` has its `textContent` replaced on boot and on every locale change:
 
 ```html
-<button id="btn-arm" data-i18n-key="ui.arm">Arm</button>
+<button id="btn-session" data-i18n-key="ui.startSession">Start session</button>
 ```
 
 The English text in the HTML serves as a visible fallback if the i18n module fails to load.

@@ -1,5 +1,49 @@
 # Design System Inspired by Claude (Anthropic)
 
+## 0. Application-specific rule — the Route Timer is king
+
+This project adapts the Anthropic design language to a **single-purpose remote-viewing app**: the phone sits on a tripod 5–10 metres away from a motorcyclist and must communicate one thing — the route time — at a glance.
+
+Therefore, in every state after the initial setup screen, the following rule overrides every other layout guidance in this document:
+
+- **The timer readout is the single dominant element on the screen.** It fills roughly `50vh` (portrait) and is center-stage. Recommended CSS scale: `font-size: clamp(160px, 40vh, 520px)`. Never compete with it at the same visual weight.
+- **Typography:** `--font-serif`, weight 500, `font-variant-numeric: tabular-nums` so digits don't jitter.
+- **State is communicated by the timer's colour**, not a separate large label. Status pill (if any) is tiny and subordinate.
+- **All other HUD elements** (countdown-to-rearm, previous route time, FPS/debug, controls) are **secondary readouts** — smaller, lower-contrast, placed so they never crowd the timer.
+- **Controls hide after `Start session`.** A tap reveals them briefly; otherwise the screen is timer-only. Rationale: the rider must read the screen from a distance — chrome is dead weight at that distance.
+- **Voice is the primary feedback channel at range** (`start`, `finish, N.N seconds`, `ready to go`), so the UI is optimized for legibility, not for rich affordance discovery.
+
+### 0.1 Signal-Background Colour System
+
+The phone is read from 5–10 metres in **bright outdoor daylight**. Dark surfaces are useless at that distance — every state signal is a **bright, high-saturation light tint** that fills the whole viewport (except the timer card and the tiny ROI preview in the corner). The colour is the semaphore; the rider does not need to read any text to know whether they can go.
+
+Tokens live in `style.css` under `--signal-*`:
+
+| Phase | Token | Hex | Meaning |
+|---|---|---|---|
+| `armed` (ready to go) | `--signal-go` | `#00d851` | Pure vivid green — "gas it". Traffic-light saturation on purpose. **No pulse** (tried ±6 % brightness, it read as flicker from distance and was dropped). |
+| `cooldown` (10 s between-runs countdown) **and** `observing` for the first ≤ 20 s | `--signal-wait` | `#ff8c00` | Pure orange — "not yet, wait". Traffic-light amber. |
+| `observing` after > 20 s of failed stabilisation (error/attention state) | `--signal-error` | `#ff2020` | Pure bright red — "come over, something is wrong". |
+| `running` | `--parchment` (default) | `#f5f4ed` | Neutral — timer is the only thing changing; avoid distracting the rider mid-run. |
+| `finished` (short ≈ 1 s flash) | `--ivory` → `--signal-wait` | cross-fade | Momentary confirmation before dropping into cooldown. |
+| `setup` | `--parchment` | `#f5f4ed` | Pre-session chrome on the default surface. |
+
+Rules:
+
+- The signal colour occupies the **entire body background** via `body[data-phase="…"] { background: var(--signal-…); }`. Do not apply it as a small pill or border — the whole viewport IS the signal.
+- Colours are deliberately **pure and maximally saturated** — basically a traffic light. Previous pastel/desaturated iterations were invisible at 10 m in sun; the only thing that survives is raw primary colour. Go red/orange/green with red and orange as different from each other as green is from red.
+- Timer text on every signal colour is `--fg` (`#141413`). Contrast stays ≥ 4.5 : 1 on every signal (≥ 10 : 1 on go, ≥ 8 : 1 on wait, ≥ 4.7 : 1 on error). Error is borderline on small sub-line text but that's fine — in error state the rider is coming to the phone, not reading from distance.
+- **No animation on ARMED.** The green is the signal; motion on top of it reads as jitter.
+- **Never combine two signal colours at once.** If multiple conditions could apply, pick the one with the higher severity (`error > wait > go`).
+- Voice is the paired remote channel: while the rider is not yet `ARMED`, the app says `not ready` every 15 s so the rider hears "still waiting" without looking at the phone.
+- Dark-theme overrides for `--signal-*` are intentionally identical to light — the app is daylight-only by design; see `TZ.md`.
+
+### 0.2 ROI Preview Placement
+
+During `setup` the ROI crop fills the screen so the user can verify framing. In every hands-free phase (`observing` / `armed` / `running` / `cooldown` / `error`) the ROI preview **must shrink to a corner thumbnail** (`≈ 20vw × 15vh`, lower-left by default, rounded corners, thin warm ring). It stays on-screen because the rider might glance at it for self-check — but it is **subordinate to the timer** and never competes for the centre. No full-screen ROI in hands-free.
+
+The rest of this document defines the palette and type system used to express the above. If a guideline here conflicts with the rule above (e.g. "use a full typographic hierarchy"), the rule above wins — this app does not have room for a hierarchy; it has one hero readout and everything else is subordinate.
+
 ## 1. Visual Theme & Atmosphere
 
 Claude's interface is a literary salon reimagined as a product page — warm, unhurried, and quietly intellectual. The entire experience is built on a parchment-toned canvas (`#f5f4ed`) that deliberately evokes the feeling of high-quality paper rather than a digital surface. Where most AI product pages lean into cold, futuristic aesthetics, Claude's design radiates human warmth, as if the AI itself has good taste in interior design.
