@@ -12,7 +12,7 @@ export default {
   'ui.arm': 'Arm',
   'ui.cancel': 'Cancel',
   'ui.newRun': 'New run',
-  'ui.zoom': 'Zoom',
+  'ui.gestureHint': 'Pinch to zoom · Two-finger drag to pan',
   'ui.threshold': 'Threshold',
   'ui.debug': 'Debug',
   'ui.language': 'Language',

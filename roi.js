@@ -1,5 +1,8 @@
 // ROI picker: user taps 2 opposite corners on the overlay canvas.
-// Returns an axis-aligned rectangle in video-pixel coordinates.
+// Returns an axis-aligned rectangle in the viewport's *intrinsic*
+// (pre-transform) CSS pixel space. The caller then maps that rectangle
+// into video-pixel coordinates before handing it to the detector.
+//
 // Upgrade path: collect 4 taps and build a polygon mask.
 
 export class RoiPicker {
@@ -8,25 +11,40 @@ export class RoiPicker {
     this.ctx = canvas.getContext('2d');
   }
 
-  pick() {
+  /**
+   * @param {{ cssToIntrinsic: (clientX: number, clientY: number) => {x: number, y: number} }} viewport
+   *        Source of truth for converting pointer positions into intrinsic
+   *        (untransformed) coordinates. We can't use getBoundingClientRect
+   *        here because the overlay's parent may be CSS-transformed for
+   *        pinch-zoom, which would distort the rect.
+   */
+  pick(viewport) {
     return new Promise((resolve) => {
-      const rect = this.canvas.getBoundingClientRect();
-      this.canvas.width = rect.width * devicePixelRatio;
-      this.canvas.height = rect.height * devicePixelRatio;
+      // Use offsetWidth/Height for the canvas pixel buffer — CSS transforms
+      // on the viewport parent scale the visual rect, not the element's
+      // own layout box. Sizing by the layout box keeps the canvas sharp
+      // at every zoom level.
+      const W = this.canvas.offsetWidth;
+      const H = this.canvas.offsetHeight;
+      this.canvas.width = Math.max(1, Math.round(W * devicePixelRatio));
+      this.canvas.height = Math.max(1, Math.round(H * devicePixelRatio));
+      this.ctx.setTransform(1, 0, 0, 1, 0, 0);
       this.ctx.scale(devicePixelRatio, devicePixelRatio);
 
       const points = [];
       const onTap = (ev) => {
-        const x = (ev.touches?.[0]?.clientX ?? ev.clientX) - rect.left;
-        const y = (ev.touches?.[0]?.clientY ?? ev.clientY) - rect.top;
+        // Ignore secondary touches so a pinch gesture's 2nd finger
+        // doesn't accidentally land a ROI corner.
+        if (!ev.isPrimary) return;
+        if (document.body.dataset.gesturing === 'true') return;
+        const { x, y } = viewport.cssToIntrinsic(ev.clientX, ev.clientY);
         points.push({ x, y });
         this._draw(points);
         if (points.length === 2) {
           this.canvas.removeEventListener('pointerdown', onTap);
+          this.canvas.style.pointerEvents = '';
           const [a, b] = points;
           const roi = {
-            // Caller must scale this into video-pixel coords using the video's
-            // intrinsic size vs. the canvas CSS size.
             x: Math.min(a.x, b.x),
             y: Math.min(a.y, b.y),
             w: Math.abs(b.x - a.x),

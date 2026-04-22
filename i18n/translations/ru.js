@@ -11,7 +11,7 @@ export default {
   'ui.arm': 'Готов',
   'ui.cancel': 'Отмена',
   'ui.newRun': 'Новый заезд',
-  'ui.zoom': 'Зум',
+  'ui.gestureHint': 'Щипок — зум · Два пальца — двигать',
   'ui.threshold': 'Порог',
   'ui.debug': 'Отладка',
   'ui.language': 'Язык',

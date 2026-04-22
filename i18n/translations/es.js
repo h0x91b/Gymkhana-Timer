@@ -11,7 +11,7 @@ export default {
   'ui.arm': 'Armar',
   'ui.cancel': 'Cancelar',
   'ui.newRun': 'Nueva carrera',
-  'ui.zoom': 'Zoom',
+  'ui.gestureHint': 'Pellizca para ampliar · Dos dedos para mover',
   'ui.threshold': 'Umbral',
   'ui.debug': 'Depuración',
   'ui.language': 'Idioma',

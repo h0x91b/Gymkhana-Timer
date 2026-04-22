@@ -11,9 +11,13 @@
 </head>
 <body>
   <main id="stage">
-    <video id="cam" playsinline autoplay muted></video>
+    <div id="viewport">
+      <video id="cam" playsinline autoplay muted></video>
+      <canvas id="overlay"></canvas>
+    </div>
     <canvas id="roi-view" hidden></canvas>
-    <canvas id="overlay"></canvas>
+
+    <div id="gesture-hint" class="gesture-hint" hidden data-i18n-key="ui.gestureHint">Pinch to zoom · Two-finger drag to pan</div>
 
     <div id="hud">
       <div id="timer" class="timer">0.000</div>
@@ -26,12 +30,6 @@
       <div id="debug" class="debug"></div>
       <div id="version-badge" class="version-badge" title="Service worker cache version and last-modified timestamp">—</div>
     </div>
-
-    <label id="zoom-control" class="zoom-control" hidden>
-      <span class="zoom-label" data-i18n-key="ui.zoom">Zoom</span>
-      <input id="zoom" type="range" min="1" max="5" step="0.1" value="1" />
-      <span id="zoom-value" class="zoom-value">1.0×</span>
-    </label>
 
     <div id="controls" class="controls">
       <button id="btn-start-camera" type="button" data-i18n-key="ui.startCamera">Start camera</button>

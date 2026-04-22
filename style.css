@@ -115,6 +115,18 @@ body {
   inset: 0;
   display: block;
   background: var(--parchment);
+  overflow: hidden;                /* Clip the pinch-zoomed viewport */
+}
+
+/* Viewport wraps the <video> + overlay and is the pinch/pan transform
+   target. transform-origin 0 0 keeps the math simple in viewport.js:
+   intrinsicPoint → visualPoint is a plain translate/scale pair. */
+#viewport {
+  position: absolute;
+  inset: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+  touch-action: none;              /* Let viewport.js own multi-touch */
 }
 
 #cam,
@@ -127,6 +139,8 @@ body {
   object-fit: cover;
 }
 
+/* Overlay only grabs pointer events while the ROI picker is active — the
+   picker itself toggles pointer-events: auto for the duration of pick(). */
 #overlay {
   pointer-events: none;
 }
@@ -436,55 +450,47 @@ body[data-roi-active="true"] .timer {
   accent-color: var(--terracotta);
 }
 
-/* Zoom control — sits just above the controls panel so it's visible
-   while the rider is framing the start/finish line. Only surfaced when
-   the active video track exposes a zoom capability (Chrome on Android).
-   Hidden once a ROI is locked in, because the shrunken preview doesn't
-   benefit from further zoom — re-press "Set ROI" to bring it back. */
-.zoom-control {
+/* Gesture hint — a translucent pill that appears for a few seconds after
+   the camera starts, teaching the rider about pinch-zoom + two-finger
+   pan. Uses position: absolute to float above the camera (below the
+   controls row) without disturbing the HUD column above. opacity +
+   transform animates in/out; pointer-events: none so it can never
+   intercept a tap. */
+.gesture-hint {
   position: absolute;
-  left: 16px;
-  right: 16px;
+  left: 50%;
   bottom: calc(env(safe-area-inset-bottom, 16px) + 92px);
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  background: rgba(250, 249, 245, 0.92);
+  transform: translate(-50%, 12px);
+  padding: 10px 16px;
+  background: rgba(20, 20, 19, 0.78);
+  color: var(--fg-on-dark);
   border-radius: var(--radius-md);
-  box-shadow: 0 0 0 1px var(--ring-warm), var(--shadow-whisper);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), var(--shadow-hud);
   font-family: var(--font-sans);
   font-size: 13px;
-  line-height: 1.4;
-  color: var(--fg-2);
-}
-
-.zoom-control .zoom-label {
-  flex-shrink: 0;
-  letter-spacing: 0.4px;
-  text-transform: uppercase;
-  font-size: 11px;
   font-weight: 500;
-  color: var(--fg-strong);
+  letter-spacing: 0.2px;
+  line-height: 1.4;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  opacity: 0;
+  transition: opacity 240ms ease, transform 240ms ease;
+  pointer-events: none;
+  white-space: nowrap;
+  max-width: calc(100vw - 32px);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.zoom-control input[type="range"] {
-  flex: 1;
-  min-width: 0;
-  accent-color: var(--terracotta);
+.gesture-hint.visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
 }
 
-.zoom-control .zoom-value {
-  flex-shrink: 0;
-  min-width: 3.2em;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--fg);
-}
-
-/* Hide zoom once ROI is locked — the tiny preview doesn't need it. */
-body[data-roi-active="true"] .zoom-control {
-  display: none;
+/* Once a ROI is locked the camera is hidden, so pinch/pan is irrelevant —
+   let all pointer activity fall through to whatever is underneath. */
+body[data-roi-active="true"] #viewport {
+  pointer-events: none;
+  /* The visible pinch state is pinned at 1× in this mode via
+     viewport.reset() in app.js, so transform is already identity. */
 }

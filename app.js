@@ -6,6 +6,7 @@ import { Detector } from './detector.js';
 import { RoiPicker } from './roi.js';
 import { Timer } from './timer.js';
 import { Storage } from './storage.js';
+import { Viewport } from './viewport.js';
 import { renderVersionBadge } from './version.js';
 import {
   ALL_LOCALES,
@@ -43,9 +44,8 @@ const els = {
   threshold: document.getElementById('threshold'),
   debugToggle: document.getElementById('debug-toggle'),
   langSelect: document.getElementById('lang-select'),
-  zoomControl: document.getElementById('zoom-control'),
-  zoom: document.getElementById('zoom'),
-  zoomValue: document.getElementById('zoom-value'),
+  viewport: document.getElementById('viewport'),
+  gestureHint: document.getElementById('gesture-hint'),
 };
 
 const roiViewCtx = els.roiView.getContext('2d');
@@ -56,6 +56,8 @@ const detector = new Detector();
 const roiPicker = new RoiPicker(els.overlay);
 const timer = new Timer(els.timer);
 const storage = new Storage();
+const viewport = new Viewport(els.viewport);
+viewport.attach();
 
 let state = STATE.IDLE;
 let t0 = 0;
@@ -193,18 +195,20 @@ async function requestWakeLock() {
 }
 
 /**
- * Convert a rectangle picked on the overlay (CSS pixels of the overlay element)
- * to the video's intrinsic pixel coordinate system, which is what drawImage's
+ * Convert a rectangle picked in the viewport's intrinsic CSS pixel space
+ * into the video's intrinsic pixel coordinate system — what drawImage's
  * source-rect arguments expect.
  *
- * The overlay covers the stage; the <video> uses object-fit: cover, so the
- * intrinsic video content is scaled by s = max(W/Vw, H/Vh) and centered.
- * Anything outside the visible sub-rectangle is cropped by object-fit.
+ * The viewport (W × H CSS pixels before any pinch transform) contains the
+ * <video>, which uses object-fit: cover. So the intrinsic video content
+ * is scaled by s = max(W/Vw, H/Vh) and centered. Anything outside the
+ * visible sub-rectangle is cropped by object-fit.
+ *
+ * Because the ROI is captured in pre-transform CSS pixels (see
+ * viewport.cssToIntrinsic), pinch-zooming after picking does NOT shift
+ * the ROI — it's a pure UX affordance, not a source of truth.
  */
-function mapCssRoiToVideoRoi(cssRoi, video, overlay) {
-  const rect = overlay.getBoundingClientRect();
-  const W = rect.width;
-  const H = rect.height;
+function mapCssRoiToVideoRoi(cssRoi, video, W, H) {
   const Vw = video.videoWidth;
   const Vh = video.videoHeight;
   if (!Vw || !Vh) return cssRoi; // video not ready — unlikely, guard anyway
@@ -237,6 +241,11 @@ function activateRoiView(roi) {
   currentRoi = roi;
   els.roiView.hidden = false;
   document.body.dataset.roiActive = 'true';
+  // Reset the pinch transform now that the ROI is locked in. The zoomed
+  // camera view isn't useful in the ROI-active layout (the camera is
+  // hidden anyway), and resetting ensures the next "Set ROI" pass starts
+  // from 1× instead of inheriting the previous zoom state.
+  viewport.reset();
   clearOverlay();
   // The layout flip (ROI pill shrinks to the corner, timer grows to hero size)
   // is CSS-driven and animates over ~220ms. The canvas pixel buffer must match
@@ -354,7 +363,7 @@ els.btnStartCamera.addEventListener('click', async () => {
   camera.onFrame(onFrame);
   els.btnStartCamera.disabled = true;
   els.btnSetRoi.disabled = false;
-  setupZoomControl();
+  showGestureHint();
 });
 
 els.btnSetRoi.addEventListener('click', async () => {
@@ -369,10 +378,16 @@ els.btnSetRoi.addEventListener('click', async () => {
   } else {
     refreshArmButton();
   }
-  // Zoom control is re-shown via the CSS selector (body no longer has
-  // data-roi-active="true"), so the user can re-frame before tapping.
-  const cssRoi = await roiPicker.pick();
-  const videoRoi = mapCssRoiToVideoRoi(cssRoi, els.video, els.overlay);
+  // Pinch-zoom stays active during the pick — that's the whole point.
+  // RoiPicker uses viewport.cssToIntrinsic(), so taps are always recorded
+  // in the untransformed coordinate system regardless of current zoom.
+  const cssRoi = await roiPicker.pick(viewport);
+  const videoRoi = mapCssRoiToVideoRoi(
+    cssRoi,
+    els.video,
+    viewport.intrinsicWidth(),
+    viewport.intrinsicHeight(),
+  );
   detector.setRoi(videoRoi);
   activateRoiView(videoRoi);
   refreshArmButton();
@@ -394,26 +409,26 @@ els.btnArm.addEventListener('click', () => {
   setState(STATE.WAITING_START);
 });
 
-function setupZoomControl() {
-  const caps = camera.getZoomCapabilities();
-  if (!caps) {
-    // Device/browser doesn't expose hardware zoom — leave the slider hidden.
-    els.zoomControl.hidden = true;
-    return;
-  }
-  els.zoom.min = String(caps.min);
-  els.zoom.max = String(caps.max);
-  els.zoom.step = String(caps.step);
-  els.zoom.value = String(caps.current);
-  els.zoomValue.textContent = `${Number(caps.current).toFixed(1)}×`;
-  els.zoomControl.hidden = false;
+// Surface a brief "pinch to zoom · two-finger drag to pan" hint after the
+// camera comes on, so the rider discovers the gesture without cluttering
+// the HUD permanently. Shown at most once per page load; fades out on
+// its own after ~3.5 seconds.
+let gestureHintShown = false;
+function showGestureHint() {
+  if (gestureHintShown) return;
+  gestureHintShown = true;
+  els.gestureHint.hidden = false;
+  // Trigger the CSS fade-in on the next frame so the initial render
+  // starts with opacity 0 and animates up.
+  requestAnimationFrame(() => els.gestureHint.classList.add('visible'));
+  setTimeout(() => {
+    els.gestureHint.classList.remove('visible');
+    // Hide it completely after the fade so it can't eat pointer events.
+    setTimeout(() => {
+      els.gestureHint.hidden = true;
+    }, 400);
+  }, 3500);
 }
-
-els.zoom.addEventListener('input', () => {
-  const value = parseFloat(els.zoom.value);
-  els.zoomValue.textContent = `${value.toFixed(1)}×`;
-  camera.setZoom(value);
-});
 
 els.threshold.addEventListener('input', () => {
   detector.setThreshold(parseFloat(els.threshold.value));

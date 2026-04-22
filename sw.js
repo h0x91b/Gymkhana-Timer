@@ -1,5 +1,5 @@
 // Minimal offline cache. Bump CACHE_VERSION on every deploy to invalidate.
-const CACHE_VERSION = 'gymkhana-v8';
+const CACHE_VERSION = 'gymkhana-v9';
 const ASSETS = [
   './',
   './index.html',
@@ -10,6 +10,7 @@ const ASSETS = [
   './roi.js',
   './timer.js',
   './storage.js',
+  './viewport.js',
   './version.js',
   './i18n/index.js',
   './i18n/interpolate.js',
