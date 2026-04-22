@@ -1,5 +1,20 @@
 # Design System Inspired by Claude (Anthropic)
 
+## 0. Application-specific rule — the Route Timer is king
+
+This project adapts the Anthropic design language to a **single-purpose remote-viewing app**: the phone sits on a tripod 5–10 metres away from a motorcyclist and must communicate one thing — the route time — at a glance.
+
+Therefore, in every state after the initial setup screen, the following rule overrides every other layout guidance in this document:
+
+- **The timer readout is the single dominant element on the screen.** It fills roughly `50vh` (portrait) and is center-stage. Recommended CSS scale: `font-size: clamp(160px, 40vh, 520px)`. Never compete with it at the same visual weight.
+- **Typography:** `--font-serif`, weight 500, `font-variant-numeric: tabular-nums` so digits don't jitter.
+- **State is communicated by the timer's colour**, not a separate large label. Status pill (if any) is tiny and subordinate.
+- **All other HUD elements** (countdown-to-rearm, previous route time, FPS/debug, controls) are **secondary readouts** — smaller, lower-contrast, placed so they never crowd the timer.
+- **Controls hide after `Start session`.** A tap reveals them briefly; otherwise the screen is timer-only. Rationale: the rider must read the screen from a distance — chrome is dead weight at that distance.
+- **Voice is the primary feedback channel at range** (`start`, `finish, N.N seconds`, `ready to go`), so the UI is optimized for legibility, not for rich affordance discovery.
+
+The rest of this document defines the palette and type system used to express the above. If a guideline here conflicts with the rule above (e.g. "use a full typographic hierarchy"), the rule above wins — this app does not have room for a hierarchy; it has one hero readout and everything else is subordinate.
+
 ## 1. Visual Theme & Atmosphere
 
 Claude's interface is a literary salon reimagined as a product page — warm, unhurried, and quietly intellectual. The entire experience is built on a parchment-toned canvas (`#f5f4ed`) that deliberately evokes the feeling of high-quality paper rather than a digital surface. Where most AI product pages lean into cold, futuristic aesthetics, Claude's design radiates human warmth, as if the AI itself has good taste in interior design.

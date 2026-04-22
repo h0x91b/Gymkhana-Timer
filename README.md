@@ -1,6 +1,6 @@
 # Gymkhana Timer
 
-Motion-triggered PWA lap timer for motorcycle gymkhana practice. The phone sits on a tripod facing the start/finish line; the camera detects the bike crossing the line and times the run.
+Motion-triggered PWA route timer for motorcycle gymkhana practice. The phone sits on a tripod facing the start/finish line; the camera detects the bike crossing the line twice — entering and exiting the same line — and times the run. After an initial tap-to-setup, the app runs hands-free: auto re-arms between runs so the rider never has to walk back to the phone.
 
 - Spec: [`TZ.md`](./TZ.md)
 - Design system: [`DESIGN.md`](./DESIGN.md)

@@ -1,7 +1,7 @@
 {
   "name": "Gymkhana Timer",
   "short_name": "Gymkhana",
-  "description": "Motion-triggered lap timer for motorcycle gymkhana practice.",
+  "description": "Hands-free motion-triggered route timer for motorcycle gymkhana practice.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "fullscreen",
