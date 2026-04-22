@@ -27,13 +27,13 @@
 //     │    voice announces "finish, N.N seconds", run saved to storage,
 //     │    phase briefly flashes ivory.
 //     └── FINISHED_FLASH seconds elapse
-//   COOLDOWN (15s)
-//     │    Big timer keeps the last run's time displayed. Sub-line shows a
-//     │    whole-second countdown ("Next run in 14s … 13s"). Phase = "cooldown"
-//     │    (amber background). After 15s we loop back to OBSERVING. The
-//     │    rider NEVER has to walk up to the phone in this loop — that's
-//     │    the whole point.
-//     └── 15s done
+//   COOLDOWN (10s)
+//     │    Big timer keeps the last run's time displayed. The cooldown pill
+//     │    below the timer shows a draining progress bar and whole-second
+//     │    countdown. Phase = "cooldown" (amber background). After 10s we
+//     │    loop back to OBSERVING. The rider NEVER has to walk up to the
+//     │    phone in this loop — that's the whole point.
+//     └── 10s done
 //   OBSERVING → ARMED → …
 //
 // Stop session is the only thing that exits the loop; a tap anywhere during
@@ -61,7 +61,7 @@ const STATE = Object.freeze({
   ARMED: 'ARMED',         // reference captured, waiting for first motion
   RUNNING: 'RUNNING',     // actively timing a run
   FINISHED: 'FINISHED',   // brief post-finish flash
-  COOLDOWN: 'COOLDOWN',   // 15s between-runs countdown
+  COOLDOWN: 'COOLDOWN',   // 10s between-runs countdown
   ERROR: 'ERROR',         // not a true state — a visual overlay on OBSERVING
 });
 
@@ -196,7 +196,7 @@ function applyTranslations() {
       ms: fpsLastPrecisionMs,
     });
   }
-  // The timer sub-line (15s countdown, "ready to go", previous run time)
+  // The timer sub-line ("ready to go", previous run time, observing hint)
   // pulls its text from translations on every frame during the session;
   // force an immediate re-render so a mid-session language swap doesn't
   // leave a stale string visible for up to one frame.
@@ -641,7 +641,15 @@ function stepSession(frame, metadata) {
           }
         }
       } else {
-        // Any movement breaks the streak; start over.
+        // Motion breaks the stability streak.
+        // If we had already started calling process() to build the reference
+        // (stableSince was past STABILITY_DURATION), discard the partial
+        // accumulation. Without this, the next stable window would continue
+        // from a half-built average that mixes pre- and post-motion frames,
+        // potentially producing a noisy or incorrect reference.
+        if (stableSince && (mt - stableSince) >= STABILITY_DURATION && !detector.hasReference()) {
+          detector.captureReference();
+        }
         stableSince = 0;
       }
       break;
