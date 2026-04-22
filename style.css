@@ -115,6 +115,18 @@ body {
   inset: 0;
   display: block;
   background: var(--parchment);
+  overflow: hidden;                /* Clip the pinch-zoomed viewport */
+}
+
+/* Viewport wraps the <video> + overlay and is the pinch/pan transform
+   target. transform-origin 0 0 keeps the math simple in viewport.js:
+   intrinsicPoint → visualPoint is a plain translate/scale pair. */
+#viewport {
+  position: absolute;
+  inset: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+  touch-action: none;              /* Let viewport.js own multi-touch */
 }
 
 #cam,
@@ -127,6 +139,8 @@ body {
   object-fit: cover;
 }
 
+/* Overlay only grabs pointer events while the ROI picker is active — the
+   picker itself toggles pointer-events: auto for the duration of pick(). */
 #overlay {
   pointer-events: none;
 }
@@ -136,10 +150,27 @@ body {
    <video> element alive so requestVideoFrameCallback keeps firing. */
 #roi-view {
   background: var(--deep-dark);
+  transition: inset 220ms ease, width 220ms ease, height 220ms ease,
+              border-radius 220ms ease, box-shadow 220ms ease;
 }
 
 body[data-roi-active="true"] #cam {
   visibility: hidden;
+}
+
+/* Once a ROI is locked in, the timer is the main event. The ROI crop
+   shrinks to a small pill in the top-right corner — large enough to
+   verify that the detector is still watching the right spot, small
+   enough not to compete with the numbers. */
+body[data-roi-active="true"] #roi-view {
+  inset: auto;
+  top: calc(env(safe-area-inset-top, 0px) + 16px);
+  right: 16px;
+  width: min(38vw, 240px);
+  height: min(22vh, 160px);
+  border-radius: var(--radius-md);
+  box-shadow: 0 0 0 1px var(--ring-warm), var(--shadow-whisper);
+  object-fit: initial;
 }
 
 #hud {
@@ -155,6 +186,16 @@ body[data-roi-active="true"] #cam {
   padding: 0 16px;
 }
 
+/* When a ROI is set, the HUD is re-purposed as a hero surface for the
+   timer: it fills the screen above the controls and centers everything.
+   The ROI preview is a small pill in the corner, so the center stage
+   is owned by the numbers. */
+body[data-roi-active="true"] #hud {
+  bottom: calc(env(safe-area-inset-bottom, 16px) + 88px);
+  justify-content: center;
+  gap: 16px;
+}
+
 /* Timer — serif, book-title gravitas, Ivory pill over the camera feed. */
 .timer {
   font-family: var(--font-serif);
@@ -168,6 +209,14 @@ body[data-roi-active="true"] #cam {
   padding: 4px 28px;
   border-radius: var(--radius-lg);
   box-shadow: 0 0 0 1px var(--ring-warm), var(--shadow-whisper);
+  transition: font-size 220ms ease, padding 220ms ease;
+}
+
+/* Hero-sized timer once a ROI is active — the number becomes the page. */
+body[data-roi-active="true"] .timer {
+  font-size: clamp(120px, 36vw, 420px);
+  padding: 12px 40px;
+  border-radius: var(--radius-xl);
 }
 
 /* Status — small sans overline, uppercase, subtle. */
@@ -399,4 +448,49 @@ body[data-roi-active="true"] #cam {
 /* Debug-toggle checkbox — keep native but tint the check. */
 .debug-toggle input[type="checkbox"] {
   accent-color: var(--terracotta);
+}
+
+/* Gesture hint — a translucent pill that appears for a few seconds after
+   the camera starts, teaching the rider about pinch-zoom + two-finger
+   pan. Uses position: absolute to float above the camera (below the
+   controls row) without disturbing the HUD column above. opacity +
+   transform animates in/out; pointer-events: none so it can never
+   intercept a tap. */
+.gesture-hint {
+  position: absolute;
+  left: 50%;
+  bottom: calc(env(safe-area-inset-bottom, 16px) + 92px);
+  transform: translate(-50%, 12px);
+  padding: 10px 16px;
+  background: rgba(20, 20, 19, 0.78);
+  color: var(--fg-on-dark);
+  border-radius: var(--radius-md);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), var(--shadow-hud);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.2px;
+  line-height: 1.4;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  opacity: 0;
+  transition: opacity 240ms ease, transform 240ms ease;
+  pointer-events: none;
+  white-space: nowrap;
+  max-width: calc(100vw - 32px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gesture-hint.visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+/* Once a ROI is locked the camera is hidden, so pinch/pan is irrelevant —
+   let all pointer activity fall through to whatever is underneath. */
+body[data-roi-active="true"] #viewport {
+  pointer-events: none;
+  /* The visible pinch state is pinned at 1× in this mode via
+     viewport.reset() in app.js, so transform is already identity. */
 }

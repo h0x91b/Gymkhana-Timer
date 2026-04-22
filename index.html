@@ -11,9 +11,13 @@
 </head>
 <body>
   <main id="stage">
-    <video id="cam" playsinline autoplay muted></video>
+    <div id="viewport">
+      <video id="cam" playsinline autoplay muted></video>
+      <canvas id="overlay"></canvas>
+    </div>
     <canvas id="roi-view" hidden></canvas>
-    <canvas id="overlay"></canvas>
+
+    <div id="gesture-hint" class="gesture-hint" hidden data-i18n-key="ui.gestureHint">Pinch to zoom · Two-finger drag to pan</div>
 
     <div id="hud">
       <div id="timer" class="timer">0.000</div>
@@ -31,7 +35,6 @@
       <button id="btn-start-camera" type="button" data-i18n-key="ui.startCamera">Start camera</button>
       <button id="btn-set-roi" type="button" disabled data-i18n-key="ui.setRoi">Set ROI</button>
       <button id="btn-arm" type="button" class="primary" disabled data-i18n-key="ui.arm">Arm</button>
-      <button id="btn-reset" type="button" disabled data-i18n-key="ui.reset">Reset</button>
       <button id="btn-update" type="button" class="update" hidden data-i18n-key="ui.update">Update</button>
       <label class="threshold">
         <span data-i18n-key="ui.threshold">Threshold</span>
