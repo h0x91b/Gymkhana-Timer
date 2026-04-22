@@ -143,7 +143,12 @@ body[data-phase="finished"]  { background: var(--ivory); }
   position: fixed;
   inset: 0;
   display: block;
-  background: var(--parchment);
+  /* MUST be transparent: the body element carries the phase-driven signal
+     colour (see body[data-phase="…"] rules above), and #stage covers the
+     whole viewport — any opaque fill here blocks the semaphore entirely.
+     Found by eye-test screenshot on 2026-04-22 showing "Готов к старту"
+     with parchment bg instead of green. */
+  background: transparent;
   overflow: hidden;                /* Clip the pinch-zoomed viewport */
 }
 
