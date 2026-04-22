@@ -21,6 +21,6 @@ The dev server is [`scripts/dev-server.ts`](./scripts/dev-server.ts) — a tiny 
 
 Camera and service worker require HTTPS off `localhost`. The dev server spawns a `cloudflared` quick tunnel and prints a QR automatically — scan it with your phone and you're testing over HTTPS in one step.
 
-## Production deploy
+## CI / Production deploy
 
-Pushing to `master` publishes the app to GitHub Pages via [`.github/workflows/pages.yml`](./.github/workflows/pages.yml). One-time setup: **repo Settings → Pages → Source: GitHub Actions**. Bump `CACHE_VERSION` in [`sw.js`](./sw.js) before each release — without it, installed PWAs keep serving the previous bundle from the service-worker cache.
+Every push and PR is verified by [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) — `bun build` smoke-tests `app.js` and `sw.js` and every JSON file is validated. Pushes to `master` that pass verification are auto-deployed to GitHub Pages (`https://h0x91b.github.io/Gymkhana-Timer/`). Bump `CACHE_VERSION` in [`sw.js`](./sw.js) before each release — without it, installed PWAs keep serving the previous bundle from the service-worker cache.

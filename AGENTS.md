@@ -334,12 +334,17 @@ Call as `tPlural('history.runCount', count)`.
 - Voice synthesis for the `voice.*` keys is locale-aware because they come from `t()`, but the `speechSynthesis` engine picks a voice based on `document.documentElement.lang` (kept in sync in `app.js`).
 - Technical terms that are the same in every language (`ROI`, `FPS`, `PWA`) stay as-is.
 
-## Deploy
+## CI / Deploy
 
-Production is **GitHub Pages**, driven by [`.github/workflows/pages.yml`](./.github/workflows/pages.yml). Every push to `master` publishes the repo root via the official `actions/upload-pages-artifact` + `actions/deploy-pages` flow. No build step — assets are uploaded verbatim.
+Single workflow at [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) with two jobs:
+
+1. **`verify`** — runs on every push and every PR. Executes `bun build --target=browser` against `app.js` and `sw.js` (catches syntax errors and broken relative imports) and validates every tracked `*.json` with `jq`. Typically finishes in under 30 s.
+2. **`deploy`** — `needs: verify`, `if: push to master`. Uploads the repo root and publishes it to GitHub Pages via the official `actions/upload-pages-artifact` + `actions/deploy-pages` flow.
+
+Because `deploy` depends on `verify`, a broken commit can never reach production — verify fails, deploy never runs. If branch protection is enabled later, add `verify` to the required status checks.
 
 - **Always bump `CACHE_VERSION` in `sw.js` before pushing a release** — otherwise installed clients keep serving the previous bundle from their service worker cache. The client-driven update flow ([`decisions/003-client-driven-sw-update.md`](./decisions/003-client-driven-sw-update.md)) needs a version change to detect anything.
-- One-time repo setup: **Settings → Pages → Source: GitHub Actions**.
+- Repo setup done programmatically via `gh api -X POST /repos/.../pages -f build_type=workflow`; `Settings → Pages` now shows "Source: GitHub Actions" and `Enforce HTTPS` is on.
 - Any other static host (Cloudflare Pages, Netlify) would work too — the app uses only relative asset paths — but there's no reason to move off Pages.
 - Rationale and alternatives: [`decisions/004-github-pages-deploy.md`](./decisions/004-github-pages-deploy.md).
 

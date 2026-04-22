@@ -1,0 +1,91 @@
+name: CI
+
+# Two-stage pipeline:
+#   1. verify — syntax + import resolution + JSON validation. Runs on every
+#      push and every pull_request, even on feature branches. Fast (< 30 s).
+#   2. deploy — publishes the repo root to GitHub Pages. Only runs on direct
+#      push to master AND only if verify passes. Opening a PR therefore
+#      gives you a green/red signal without touching production.
+#
+# "Required for merge" is enforced by `deploy: needs: verify` — if verify
+# fails, production never updates. If branch protection is ever enabled,
+# add "verify" to the list of required status checks.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Serialize Pages deploys; keep PR verifications parallel.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # bun build with --target=browser parses every module and resolves
+      # every import. It catches syntax errors, bad relative paths, typos
+      # in exported identifiers, and dead `import` statements. No output
+      # is shipped — this is purely a smoke test.
+      - name: Build check — app entry
+        run: bun build app.js --target=browser --outdir=/tmp/build-check
+
+      - name: Build check — service worker
+        run: bun build sw.js --target=browser --outdir=/tmp/build-check
+
+      # Every tracked JSON file must parse. manifest.json, package.json,
+      # i18n translation files (if they ever become .json), anything in
+      # .dev3/ or .claude/ — all get checked.
+      - name: Validate JSON files
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            if ! jq empty "$f" >/dev/null 2>&1; then
+              echo "::error file=$f::invalid JSON"
+              fail=1
+            fi
+          done < <(git ls-files '*.json')
+          exit "$fail"
+
+  deploy:
+    name: deploy
+    needs: verify
+    # Only on direct push to master — PRs get verified but never deploy.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '.'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
