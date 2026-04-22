@@ -6,6 +6,7 @@
  *   PORT=3000 bun run start    # override port
  *   HOST=127.0.0.1 bun run start
  *   TUNNEL=0 bun run start     # disable the cloudflared quick tunnel
+ *   CF_PROTOCOL=quic bun run start  # force QUIC (UDP/7844) for the tunnel
  *   DEV_RELOAD=0 bun run start # disable live-reload injection
  *
  * Notes:
@@ -489,6 +490,16 @@ function startTunnel(port: number): void {
 		return;
 	}
 
+	// Default to HTTP/2 (TCP/7844) rather than QUIC (UDP/7844). Many home
+	// ISPs, mobile carriers, and corporate firewalls either rate-limit or
+	// silently drop UDP/7844, which leaves the quick tunnel stuck in an
+	// endless "failed to dial to edge with quic: timeout: no recent network
+	// activity" retry loop even though the `trycloudflare.com` URL is
+	// already printed — the page just never resolves. HTTP/2 is the
+	// Cloudflare-recommended fallback and connects on the first try in the
+	// same environments. If you're on a network where UDP works and want
+	// the QUIC path back, run with `CF_PROTOCOL=quic`.
+	const protocol = process.env.CF_PROTOCOL ?? "http2";
 	let child: ReturnType<typeof Bun.spawn>;
 	try {
 		child = Bun.spawn(
@@ -498,6 +509,8 @@ function startTunnel(port: number): void {
 				"--url",
 				`http://localhost:${port}`,
 				"--no-autoupdate",
+				"--protocol",
+				protocol,
 			],
 			{ stdout: "pipe", stderr: "pipe" },
 		);
