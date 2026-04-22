@@ -21,9 +21,9 @@ Tokens live in `style.css` under `--signal-*`:
 
 | Phase | Token | Hex | Meaning |
 |---|---|---|---|
-| `armed` (ready to go) | `--signal-go` | `#5fc93a` | Saturated grass-green — "gas it". **No pulse** (tried ±6 % brightness, it read as flicker from distance and was dropped). |
-| `cooldown` (10 s between-runs countdown) **and** `observing` for the first ≤ 20 s | `--signal-wait` | `#ffa94d` | Bright orange leaning yellow — "not yet, wait". |
-| `observing` after > 20 s of failed stabilisation (error/attention state) | `--signal-error` | `#ff5a42` | Bright coral-red — "come over, something is wrong". |
+| `armed` (ready to go) | `--signal-go` | `#00d851` | Pure vivid green — "gas it". Traffic-light saturation on purpose. **No pulse** (tried ±6 % brightness, it read as flicker from distance and was dropped). |
+| `cooldown` (10 s between-runs countdown) **and** `observing` for the first ≤ 20 s | `--signal-wait` | `#ff8c00` | Pure orange — "not yet, wait". Traffic-light amber. |
+| `observing` after > 20 s of failed stabilisation (error/attention state) | `--signal-error` | `#ff2020` | Pure bright red — "come over, something is wrong". |
 | `running` | `--parchment` (default) | `#f5f4ed` | Neutral — timer is the only thing changing; avoid distracting the rider mid-run. |
 | `finished` (short ≈ 1 s flash) | `--ivory` → `--signal-wait` | cross-fade | Momentary confirmation before dropping into cooldown. |
 | `setup` | `--parchment` | `#f5f4ed` | Pre-session chrome on the default surface. |
@@ -31,8 +31,8 @@ Tokens live in `style.css` under `--signal-*`:
 Rules:
 
 - The signal colour occupies the **entire body background** via `body[data-phase="…"] { background: var(--signal-…); }`. Do not apply it as a small pill or border — the whole viewport IS the signal.
-- Colours are deliberately **saturated**, not pastel. Pastels read as "nothing happened" from 10 m in sun; saturated tints read as a clear semaphore.
-- Timer text on every signal colour is `--fg` (`#141413`). Near-black on saturated light tints keeps ≥ 5 : 1 contrast on each.
+- Colours are deliberately **pure and maximally saturated** — basically a traffic light. Previous pastel/desaturated iterations were invisible at 10 m in sun; the only thing that survives is raw primary colour. Go red/orange/green with red and orange as different from each other as green is from red.
+- Timer text on every signal colour is `--fg` (`#141413`). Contrast stays ≥ 4.5 : 1 on every signal (≥ 10 : 1 on go, ≥ 8 : 1 on wait, ≥ 4.7 : 1 on error). Error is borderline on small sub-line text but that's fine — in error state the rider is coming to the phone, not reading from distance.
 - **No animation on ARMED.** The green is the signal; motion on top of it reads as jitter.
 - **Never combine two signal colours at once.** If multiple conditions could apply, pick the one with the higher severity (`error > wait > go`).
 - Voice is the paired remote channel: while the rider is not yet `ARMED`, the app says `not ready` every 15 s so the rider hears "still waiting" without looking at the phone.

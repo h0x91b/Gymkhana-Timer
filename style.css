@@ -57,9 +57,9 @@
      semaphore (red / orange / green) — unambiguous at any distance. Timer
      text (--fg) stays readable on every signal. Never mix two at once;
      higher severity wins. */
-  --signal-go: #5fc93a;          /* ARMED — saturated grass-green, "gas it" (vivid, not pastel) */
-  --signal-wait: #ffa94d;        /* COOLDOWN / early OBSERVING — bright orange leaning yellow, "not yet" */
-  --signal-error: #ff5a42;       /* OBSERVING > 20s — bright coral-red, "come over" */
+  --signal-go: #00d851;          /* ARMED — pure vivid green, traffic-light "go" (max saturation) */
+  --signal-wait: #ff8c00;        /* COOLDOWN / early OBSERVING — pure orange, traffic-light "caution" */
+  --signal-error: #ff2020;       /* OBSERVING > 20s — pure bright red, traffic-light "stop/attention" */
 
   /* === Shadows === */
   --shadow-whisper: rgba(0, 0, 0, 0.05) 0px 4px 24px;
