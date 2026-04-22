@@ -1,4 +1,4 @@
-# 004 — Pinch-zoom via CSS transform, not MediaStreamTrack hardware zoom
+# 005 — Pinch-zoom via CSS transform, not MediaStreamTrack hardware zoom
 
 ## Context
 
