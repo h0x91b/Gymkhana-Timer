@@ -452,7 +452,11 @@ function updateSubline(mediaTime) {
 function enterObserving(mediaTime) {
   detector.captureReference();    // next process() calls will rebuild the averaged reference
   detector.resetStillness();      // fresh previous-frame snapshot for stillness probing
-  observingStartedAt = mediaTime;
+  // 0 is our sentinel for "no frame yet" — the OBSERVING branch of stepSession
+  // re-anchors the timer on the first real frame. Using mediaTime directly is
+  // fine for mid-session transitions (e.g. after COOLDOWN) where lastFrameMediaTime
+  // is already the current frame's clock.
+  observingStartedAt = mediaTime || 0;
   stableSince = 0;
   setState(STATE.OBSERVING);
 }
@@ -571,6 +575,11 @@ function stepSession(frame, metadata) {
 
   switch (state) {
     case STATE.OBSERVING: {
+      // If Start session fired before any frame arrived, observingStartedAt
+      // was seeded with the stale lastFrameMediaTime (possibly 0 or a large
+      // value captured during setup). Re-anchor on the first real frame so
+      // the 20-second error-timeout measures actual observing wall time.
+      if (!observingStartedAt) observingStartedAt = mt;
       const still = detector.observeStillness(frame);
       if (still < STABILITY_THRESHOLD) {
         if (!stableSince) stableSince = mt;
