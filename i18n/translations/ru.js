@@ -30,6 +30,7 @@ export default {
   // Fractional seconds always take "секунды" in Russian speech, so no plural split here.
   'voice.finish': 'Финиш. {seconds} секунды',
   'voice.readyToGo': 'Готов',
+  'voice.notReady': 'Не готов',
 
   'history.runCount_one': '{count} заезд',
   'history.runCount_few': '{count} заезда',

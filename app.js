@@ -71,9 +71,10 @@ const STATE = Object.freeze({
 const STABILITY_THRESHOLD = 0.04;        // ≤ 4% pixel delta between frames = "still"
 const STABILITY_DURATION = 2.0;          // seconds of continuous stillness to arm
 const OBSERVING_ERROR_TIMEOUT = 20.0;    // seconds; past this OBSERVING flips to coral "come over" signal
-const BETWEEN_RUNS_COOLDOWN = 15.0;      // seconds between FINISHED and the next OBSERVING
+const BETWEEN_RUNS_COOLDOWN = 10.0;      // seconds between FINISHED and the next OBSERVING
 const FINISHED_FLASH = 1.0;              // seconds of ivory flash right after finish
 const TAP_REVEAL_MS = 5000;              // controls stay visible this long after a tap during hands-free
+const NOT_READY_VOICE_INTERVAL = 15.0;   // seconds; spoken while the session is active but not yet ARMED
 
 const els = {
   video: document.getElementById('cam'),
@@ -133,6 +134,7 @@ let finishedFlashUntil = 0;      // mediaTime after which FINISHED transitions t
 let lastFrameMediaTime = 0;      // last frame's mediaTime, cached for non-frame callers
 let lastRunElapsed = null;       // seconds; shown on the big timer between runs
 let tapRevealTimer = 0;          // setTimeout handle for controls auto-hide
+let nextNotReadyVoiceAt = 0;     // mediaTime when we should next speak "not ready" (0 = disabled / session off)
 
 // FPS / timing-precision tracking.
 // Rolling buffer of the last N frame intervals (seconds), sourced from
@@ -457,6 +459,11 @@ function enterObserving(mediaTime) {
   // fine for mid-session transitions (e.g. after COOLDOWN) where lastFrameMediaTime
   // is already the current frame's clock.
   observingStartedAt = mediaTime || 0;
+  // Schedule the first "not ready" voice cue. Intentionally lags entering
+  // OBSERVING by the full interval — a normal observing pass resolves in
+  // 2–3 s so a clean cycle stays silent; only genuinely stuck observations
+  // (rider in frame, shadow, etc.) earn the audio nudge.
+  nextNotReadyVoiceAt = (mediaTime || 0) + NOT_READY_VOICE_INTERVAL;
   stableSince = 0;
   setState(STATE.OBSERVING);
 }
@@ -579,7 +586,18 @@ function stepSession(frame, metadata) {
       // was seeded with the stale lastFrameMediaTime (possibly 0 or a large
       // value captured during setup). Re-anchor on the first real frame so
       // the 20-second error-timeout measures actual observing wall time.
-      if (!observingStartedAt) observingStartedAt = mt;
+      if (!observingStartedAt) {
+        observingStartedAt = mt;
+        nextNotReadyVoiceAt = mt + NOT_READY_VOICE_INTERVAL;
+      }
+      // Periodic voice reminder: while we're stuck in OBSERVING (either the
+      // normal wait or the post-20s error visual), say "not ready" every
+      // NOT_READY_VOICE_INTERVAL seconds so the rider stays in the loop
+      // without looking at the phone.
+      if (mt >= nextNotReadyVoiceAt) {
+        timer.speak(t('voice.notReady'));
+        nextNotReadyVoiceAt = mt + NOT_READY_VOICE_INTERVAL;
+      }
       const still = detector.observeStillness(frame);
       if (still < STABILITY_THRESHOLD) {
         if (!stableSince) stableSince = mt;
@@ -663,6 +681,14 @@ els.btnSetRoi.addEventListener('click', async () => {
   detector.setRoi(videoRoi);
   activateRoiView(videoRoi);
   refreshSessionButton();
+  // ROI picked ⇒ the rider has committed to the framing; there is no value
+  // in forcing a second "Start session" tap right after. Auto-enter the
+  // hands-free loop straight away — Stop session is always reachable via
+  // tap-to-reveal if they change their mind. The detector threshold is
+  // pulled from the slider as part of startSession() → enterObserving()
+  // → process() building the reference frame.
+  detector.setThreshold(parseFloat(els.threshold.value));
+  startSession();
 });
 
 // Session lifecycle button. Label swaps between "Start session" and

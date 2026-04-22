@@ -36,6 +36,10 @@ export default {
   'voice.start': 'Start',
   'voice.finish': 'Finish. {seconds} seconds',
   'voice.readyToGo': 'Ready to go',
+  // Spoken every NOT_READY_VOICE_INTERVAL seconds while the session is active
+  // but not yet ARMED. Keeps the rider in sync with the phone's state without
+  // asking them to glance at it.
+  'voice.notReady': 'Not ready',
 
   'history.runCount_one': '{count} run',
   'history.runCount_other': '{count} runs',

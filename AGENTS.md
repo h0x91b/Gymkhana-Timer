@@ -111,9 +111,11 @@ The app's entire value is "don't make the rider walk back to the phone between r
   - `finish, N.N seconds` on second trigger,
   - `ready to go` when `COOLDOWN` completes and `ARMED` is reached.
 - **Stop session is an overlay, not a persistent button.** Controls hide after session start; a tap anywhere reveals them briefly. This prevents accidental stops during a run but keeps the escape hatch obvious.
-- **Daylight signal colours drive the background, not decorative labels.** `--signal-go` (bright lime) on `ARMED`, `--signal-wait` (golden amber) on `COOLDOWN` and the first 20 s of `OBSERVING`, `--signal-error` (bright coral) once `OBSERVING` exceeds 20 s, `--parchment` on `RUNNING`. The full viewport is tinted — small pills do not survive the 10-metre test. Full contract lives in [`DESIGN.md` §0.1](./DESIGN.md#01-signal-background-colour-system).
-- **`ARMED` pulses.** 1.4 s, ±6 % brightness, disabled under `prefers-reduced-motion`.
+- **Daylight signal colours drive the background, not decorative labels.** Saturated, not pastel: `--signal-go` (grass-green `#5fc93a`) on `ARMED`, `--signal-wait` (bright orange `#ffa94d`) on `COOLDOWN` and the first 20 s of `OBSERVING`, `--signal-error` (coral-red `#ff5a42`) once `OBSERVING` exceeds 20 s, `--parchment` on `RUNNING`. The full viewport is tinted — small pills do not survive the 10-metre test. Full contract lives in [`DESIGN.md` §0.1](./DESIGN.md#01-signal-background-colour-system).
+- **No animation on `ARMED`.** Tried a gentle pulse; at 10 m it read as distracting flicker rather than confirmation. Saturated green on its own is the signal.
+- **Voice keeps the rider in sync when the eyes are elsewhere.** While the session is active but not yet `ARMED` (`OBSERVING` or error-visual), the app says `not ready` every 15 s. Plus the existing `start` / `finish, N.N seconds` / `ready to go` cues.
 - **ROI preview shrinks to a corner thumbnail** in every hands-free phase (lower-left, ~`20vw × 15vh`). The rider still wants to self-check framing; they do **not** want it competing with the timer. Full-screen ROI only during `setup`.
+- **No explicit "Start session" button.** As soon as the ROI is picked, the app enters the hands-free loop. The session toggle at the bottom shows `Stop session` only (revealed briefly on tap); this keeps the setup flow to the minimum two taps — `Start camera` → `Set ROI`.
 
 Anything that violates these rules is a regression even if other tests pass.
 

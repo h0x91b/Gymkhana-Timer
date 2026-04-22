@@ -14,7 +14,7 @@ Three trigger strategies considered for "when is it safe to re-arm?":
 
 ## Decision
 
-**ROI stability observation**, wrapped in a 15-second between-runs cooldown that the rider can visually read ("Next run in 14s"). Full state machine:
+**ROI stability observation**, wrapped in a 10-second between-runs cooldown that the rider can visually read ("Next run in 9s"). Full state machine:
 
 ```
 IDLE → (Start session) → OBSERVING → (stable ≥ 2s) → ARMED
@@ -35,8 +35,9 @@ Constants (chosen from gymkhana practice observation, tunable in `app.js`):
 - `STABILITY_THRESHOLD = 0.04`
 - `STABILITY_DURATION = 2.0` s
 - `OBSERVING_ERROR_TIMEOUT = 20.0` s (flips background to coral to cue the rider)
-- `BETWEEN_RUNS_COOLDOWN = 15.0` s
+- `BETWEEN_RUNS_COOLDOWN = 10.0` s
 - `FINISHED_FLASH = 1.0` s
+- `NOT_READY_VOICE_INTERVAL = 15.0` s (spoken cue while the session is active but not yet ARMED)
 
 ## Risks
 

@@ -29,6 +29,7 @@ export default {
   'voice.start': 'Salida',
   'voice.finish': 'Meta. {seconds} segundos',
   'voice.readyToGo': 'Listo',
+  'voice.notReady': 'No listo',
 
   'history.runCount_one': '{count} carrera',
   'history.runCount_other': '{count} carreras',

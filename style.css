@@ -52,13 +52,14 @@
   --status-finished: #3898ec;    /* Focus blue — the one permitted cool moment */
 
   /* === Signal-background colours (DESIGN.md §0.1) ===
-     Light, high-saturation tints that fill the whole viewport so the rider
-     can read the app's state from 10 m under bright daylight. Bright outdoors
-     only — no dark variants. Timer text (--fg) keeps ≥ 5.5 : 1 contrast on
-     every signal. Never mix two at once; higher severity wins. */
-  --signal-go: #b9e089;          /* ARMED — warm lime, "gas it" */
-  --signal-wait: #f2cc6b;        /* COOLDOWN / early OBSERVING — golden amber, "not yet" */
-  --signal-error: #f57a62;       /* OBSERVING > 20s — bright coral, "come over" */
+     High-saturation, daylight-legible tints that fill the whole viewport so
+     the rider can read state from 10 m under bright sun. Three-stage
+     semaphore (red / orange / green) — unambiguous at any distance. Timer
+     text (--fg) stays readable on every signal. Never mix two at once;
+     higher severity wins. */
+  --signal-go: #5fc93a;          /* ARMED — saturated grass-green, "gas it" (vivid, not pastel) */
+  --signal-wait: #ffa94d;        /* COOLDOWN / early OBSERVING — bright orange leaning yellow, "not yet" */
+  --signal-error: #ff5a42;       /* OBSERVING > 20s — bright coral-red, "come over" */
 
   /* === Shadows === */
   --shadow-whisper: rgba(0, 0, 0, 0.05) 0px 4px 24px;
@@ -133,18 +134,10 @@ body[data-phase="armed"]     { background: var(--signal-go); }
 body[data-phase="error"]     { background: var(--signal-error); }
 body[data-phase="finished"]  { background: var(--ivory); }
 
-/* ARMED pulses so "go!" is catchable by peripheral vision even if the rider
-   isn't looking straight at the phone. ±6% brightness, 1.4s cycle. */
-@keyframes armedPulse {
-  0%, 100% { filter: brightness(0.96); }
-  50%      { filter: brightness(1.04); }
-}
-body[data-phase="armed"] {
-  animation: armedPulse 1.4s ease-in-out infinite;
-}
-@media (prefers-reduced-motion: reduce) {
-  body[data-phase="armed"] { animation: none; }
-}
+/* No ARMED pulse: the saturated green signal carries enough on its own, and
+   a ±6% brightness flicker at 10 m was either invisible or distracting in
+   practice — so we dropped it. Keeping the @keyframes stripped out entirely
+   keeps the CSS honest. */
 
 #stage {
   position: fixed;

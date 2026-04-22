@@ -19,11 +19,11 @@ The phone is read from 5–10 metres in **bright outdoor daylight**. Dark surfac
 
 Tokens live in `style.css` under `--signal-*`:
 
-| Phase | Token | Hex (light theme) | Meaning |
+| Phase | Token | Hex | Meaning |
 |---|---|---|---|
-| `armed` (ready to go) | `--signal-go` | `#b9e089` | Bright warm lime — "gas it". Slow pulse (±6 % brightness, 1.4 s cycle). |
-| `cooldown` (15 s between-runs countdown) **and** `observing` for the first ≤ 20 s | `--signal-wait` | `#f2cc6b` | Golden/amber — "not yet, wait". |
-| `observing` after > 20 s of failed stabilisation (error/attention state) | `--signal-error` | `#f57a62` | Bright coral — "come over, something is wrong". |
+| `armed` (ready to go) | `--signal-go` | `#5fc93a` | Saturated grass-green — "gas it". **No pulse** (tried ±6 % brightness, it read as flicker from distance and was dropped). |
+| `cooldown` (10 s between-runs countdown) **and** `observing` for the first ≤ 20 s | `--signal-wait` | `#ffa94d` | Bright orange leaning yellow — "not yet, wait". |
+| `observing` after > 20 s of failed stabilisation (error/attention state) | `--signal-error` | `#ff5a42` | Bright coral-red — "come over, something is wrong". |
 | `running` | `--parchment` (default) | `#f5f4ed` | Neutral — timer is the only thing changing; avoid distracting the rider mid-run. |
 | `finished` (short ≈ 1 s flash) | `--ivory` → `--signal-wait` | cross-fade | Momentary confirmation before dropping into cooldown. |
 | `setup` | `--parchment` | `#f5f4ed` | Pre-session chrome on the default surface. |
@@ -31,10 +31,12 @@ Tokens live in `style.css` under `--signal-*`:
 Rules:
 
 - The signal colour occupies the **entire body background** via `body[data-phase="…"] { background: var(--signal-…); }`. Do not apply it as a small pill or border — the whole viewport IS the signal.
-- Timer text on every signal colour is `--fg` (`#141413`). Contrast ratios verified: ≥ 7 : 1 on go, ≥ 8 : 1 on wait, ≥ 5.5 : 1 on error.
-- `armed` pulse is CSS-only (`@keyframes armedPulse`), uses `filter: brightness(…)` on the body, and is disabled under `prefers-reduced-motion: reduce`.
+- Colours are deliberately **saturated**, not pastel. Pastels read as "nothing happened" from 10 m in sun; saturated tints read as a clear semaphore.
+- Timer text on every signal colour is `--fg` (`#141413`). Near-black on saturated light tints keeps ≥ 5 : 1 contrast on each.
+- **No animation on ARMED.** The green is the signal; motion on top of it reads as jitter.
 - **Never combine two signal colours at once.** If multiple conditions could apply, pick the one with the higher severity (`error > wait > go`).
-- Dark-theme overrides for `--signal-*` are intentionally near-identical to light — the app is daylight-only by design; see `TZ.md`.
+- Voice is the paired remote channel: while the rider is not yet `ARMED`, the app says `not ready` every 15 s so the rider hears "still waiting" without looking at the phone.
+- Dark-theme overrides for `--signal-*` are intentionally identical to light — the app is daylight-only by design; see `TZ.md`.
 
 ### 0.2 ROI Preview Placement
 
