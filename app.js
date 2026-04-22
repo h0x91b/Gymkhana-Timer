@@ -63,6 +63,12 @@ let state = STATE.IDLE;
 let t0 = 0;
 let startedAt = 0;
 let wakeLock = null;
+// The browser auto-releases the Wake Lock when the page goes hidden (tab
+// switch, phone lock, incoming call). We re-request on `visibilitychange`
+// so the screen stays awake across interruptions — but only if the user
+// ever started the camera in this session. Without this flag we'd grab a
+// lock on page load, which is wasteful and not what the user asked for.
+let wakeLockDesired = false;
 
 // FPS / timing-precision tracking.
 // Rolling buffer of the last N frame intervals (seconds), sourced from
@@ -186,13 +192,36 @@ function refreshArmButton() {
 }
 
 async function requestWakeLock() {
+  wakeLockDesired = true;
   if (!('wakeLock' in navigator)) return;
+  // Already have a live lock — nothing to do. `released` flips to true after
+  // the browser auto-releases it on visibility change.
+  if (wakeLock && !wakeLock.released) return;
   try {
     wakeLock = await navigator.wakeLock.request('screen');
+    // The `release` event fires whether the release was ours or the browser's
+    // (page hidden, battery-saver kick-in). Clear the ref so the next
+    // visibility-return path grabs a fresh lock cleanly.
+    wakeLock.addEventListener('release', () => {
+      wakeLock = null;
+    });
   } catch (err) {
+    // Typical cause: page not visible at the moment of request. That's fine
+    // — the visibilitychange handler will retry when we're visible again.
     console.warn('Wake lock failed:', err);
   }
 }
+
+// Re-acquire the screen wake lock when the tab becomes visible again.
+// The browser releases it automatically on hide (tab switch, phone lock,
+// app-switcher, incoming call) and there is no way to prevent that; the
+// only fix is to ask again on return. Guarded by `wakeLockDesired` so we
+// don't grab a lock before the user has ever started the camera.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && wakeLockDesired) {
+    requestWakeLock();
+  }
+});
 
 /**
  * Convert a rectangle picked in the viewport's intrinsic CSS pixel space
