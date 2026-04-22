@@ -97,6 +97,7 @@ const els = {
   langSelect: document.getElementById('lang-select'),
   viewport: document.getElementById('viewport'),
   gestureHint: document.getElementById('gesture-hint'),
+  roiHint: document.getElementById('roi-hint'),
   controls: document.getElementById('controls'),
 };
 
@@ -134,6 +135,13 @@ let lastFrameMediaTime = 0;      // last frame's mediaTime, cached for non-frame
 let lastRunElapsed = null;       // seconds; shown on the big timer between runs
 let tapRevealTimer = 0;          // setTimeout handle for controls auto-hide
 let nextNotReadyVoiceAt = 0;     // mediaTime when we should next speak "not ready" (0 = disabled / session off)
+// Re-entry guard for the ROI pick flow. Without it, a second Set ROI tap
+// while the first pick is still waiting for its two corner taps stacks a
+// second pointerdown listener on #overlay — both listeners then race on the
+// user's taps, the first to reach two points resolves and auto-starts the
+// session, and the second pick is orphaned. Symptom the user reports:
+// "can't set ROI a second time; it just starts observing immediately".
+let pickingRoi = false;
 
 // FPS / timing-precision tracking.
 // Rolling buffer of the last N frame intervals (seconds), sourced from
@@ -699,34 +707,70 @@ els.btnStartCamera.addEventListener('click', async () => {
   showGestureHint();
 });
 
-els.btnSetRoi.addEventListener('click', async () => {
+els.btnSetRoi.addEventListener('click', beginRoiPick);
+
+async function beginRoiPick() {
+  // Single-flight guard. See `pickingRoi` declaration above for the full
+  // story — TL;DR, stacking two picks races on the corner taps and the
+  // loser never resolves, so the user cannot re-pick.
+  if (pickingRoi) return;
+  pickingRoi = true;
   // Re-picking the ROI implies re-configuring the camera — any active session
   // must stop first so its reference frame + observing streak don't get
   // inherited into the new ROI (which would be nonsense).
   if (sessionActive) stopSession();
   deactivateRoiView();
   refreshSessionButton();
-  // Pinch-zoom stays active during the pick — that's the whole point.
-  // RoiPicker uses viewport.cssToIntrinsic(), so taps are always recorded
-  // in the untransformed coordinate system regardless of current zoom.
-  const cssRoi = await roiPicker.pick(viewport);
-  const videoRoi = mapCssRoiToVideoRoi(
-    cssRoi,
-    els.video,
-    viewport.intrinsicWidth(),
-    viewport.intrinsicHeight(),
-  );
-  detector.setRoi(videoRoi);
-  activateRoiView(videoRoi);
-  refreshSessionButton();
-  // ROI picked ⇒ the rider has committed to the framing; there is no value
-  // in forcing a second "Start session" tap right after. Auto-enter the
-  // hands-free loop straight away — Stop session is always reachable via
-  // tap-to-reveal if they change their mind. The detector threshold is
-  // pulled from the slider as part of startSession() → enterObserving()
-  // → process() building the reference frame.
-  detector.setThreshold(parseFloat(els.threshold.value));
-  startSession();
+  // Visual state: hide the controls panel (CSS keys off data-picking-roi),
+  // show the "Tap two opposite corners" hint, and disable the button itself
+  // so a rapid re-tap can't re-enter this handler even if the guard above
+  // somehow lets it through.
+  document.body.dataset.pickingRoi = 'true';
+  els.btnSetRoi.disabled = true;
+  els.roiHint.hidden = false;
+  try {
+    // Pinch-zoom stays active during the pick — that's the whole point.
+    // RoiPicker uses viewport.cssToIntrinsic(), so taps are always recorded
+    // in the untransformed coordinate system regardless of current zoom.
+    const cssRoi = await roiPicker.pick(viewport);
+    const videoRoi = mapCssRoiToVideoRoi(
+      cssRoi,
+      els.video,
+      viewport.intrinsicWidth(),
+      viewport.intrinsicHeight(),
+    );
+    detector.setRoi(videoRoi);
+    activateRoiView(videoRoi);
+    // ROI picked ⇒ the rider has committed to the framing; there is no value
+    // in forcing a second "Start session" tap right after. Auto-enter the
+    // hands-free loop straight away — Stop session is always reachable via
+    // tap-to-reveal if they change their mind. The detector threshold is
+    // pulled from the slider as part of startSession() → enterObserving()
+    // → process() building the reference frame.
+    detector.setThreshold(parseFloat(els.threshold.value));
+    startSession();
+  } finally {
+    pickingRoi = false;
+    document.body.dataset.pickingRoi = 'false';
+    els.btnSetRoi.disabled = false;
+    els.roiHint.hidden = true;
+    refreshSessionButton();
+  }
+}
+
+// Tap the ROI thumbnail during a hands-free session to re-pick — otherwise
+// the only way to reach Set ROI is to first tap anywhere to reveal the
+// controls panel and then hunt for the button. For the primary recurring
+// adjustment (rider repositioned the camera mid-practice), a direct tap
+// on the mini-preview is the obvious gesture.
+els.roiView.addEventListener('pointerdown', (ev) => {
+  if (!currentRoi) return;
+  if (pickingRoi) return;
+  // Stop propagation so the body listener doesn't also run revealControls()
+  // — the session is about to stop anyway, and the dueling state changes
+  // would flicker the controls panel in and out.
+  ev.stopPropagation();
+  beginRoiPick();
 });
 
 // Session lifecycle button. Label swaps between "Start session" and

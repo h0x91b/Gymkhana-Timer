@@ -15,6 +15,7 @@ export default {
   'ui.stopSession': 'Остановить',
   'ui.cancel': 'Отмена',
   'ui.gestureHint': 'Щипок — зум · Два пальца — двигать',
+  'ui.roiHint': 'Коснись двух противоположных углов створа старта/финиша',
   'ui.threshold': 'Порог',
   'ui.debug': 'Отладка',
   'ui.language': 'Язык',

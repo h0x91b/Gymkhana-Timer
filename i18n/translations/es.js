@@ -15,6 +15,7 @@ export default {
   'ui.stopSession': 'Detener',
   'ui.cancel': 'Cancelar',
   'ui.gestureHint': 'Pellizca para ampliar · Dos dedos para mover',
+  'ui.roiHint': 'Toca dos esquinas opuestas de la línea de salida/meta',
   'ui.threshold': 'Umbral',
   'ui.debug': 'Depuración',
   'ui.language': 'Idioma',

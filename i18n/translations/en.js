@@ -18,6 +18,7 @@ export default {
   'ui.stopSession': 'Stop session',
   'ui.cancel': 'Cancel',
   'ui.gestureHint': 'Pinch to zoom · Two-finger drag to pan',
+  'ui.roiHint': 'Tap two opposite corners of the start/finish line',
   'ui.threshold': 'Threshold',
   'ui.debug': 'Debug',
   'ui.language': 'Language',
