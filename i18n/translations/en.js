@@ -12,12 +12,13 @@ export default {
   'status.error': 'CHECK CAMERA',
 
   'ui.startCamera': 'Start camera',
-  'ui.setRoi': 'Set ROI',
+  'ui.setRoi': 'Set ROI', // legacy key, kept for compatibility
+  'ui.confirmRoi': 'Confirm ROI',
   // The one and only button that hands control over to the hands-free loop.
   'ui.startSession': 'Start session',
   'ui.stopSession': 'Stop session',
   'ui.cancel': 'Cancel',
-  'ui.gestureHint': 'Pinch to zoom · Two-finger drag to pan',
+  'ui.gestureHint': 'Pinch to place the gate inside the square · Two-finger drag to pan · Tap Confirm ROI',
   'ui.threshold': 'Threshold',
   'ui.debug': 'Debug',
   'ui.language': 'Language',

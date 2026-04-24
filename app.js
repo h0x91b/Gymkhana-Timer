@@ -41,7 +41,14 @@
 
 import { Camera } from './camera.js';
 import { Detector } from './detector.js';
-import { RoiPicker } from './roi.js';
+// RoiPicker (two-tap corner picker) is deliberately unused. Keeping the
+// file around for reference — the two-tap flow was replaced with
+// "zoom-as-ROI": the visible viewport (after pinch/pan) IS the ROI. See
+// the btnSetRoi handler below for the single-function conversion.
+// Reason for the switch: the tap picker raced with the Viewport pinch
+// gesture — the first finger's pointerdown fired before the second
+// finger could set `body.dataset.gesturing=true`, so a pinch always
+// registered a stray corner-tap before the zoom kicked in.
 import { Timer } from './timer.js';
 import { Storage } from './storage.js';
 import { Viewport } from './viewport.js';
@@ -97,6 +104,7 @@ const els = {
   langSelect: document.getElementById('lang-select'),
   viewport: document.getElementById('viewport'),
   gestureHint: document.getElementById('gesture-hint'),
+  reticle: document.getElementById('reticle'),
   controls: document.getElementById('controls'),
 };
 
@@ -105,7 +113,6 @@ let currentRoi = null; // video-intrinsic coordinates
 
 const camera = new Camera(els.video);
 const detector = new Detector();
-const roiPicker = new RoiPicker(els.overlay);
 const timer = new Timer(els.timer);
 const storage = new Storage();
 const viewport = new Viewport(els.viewport);
@@ -697,36 +704,95 @@ els.btnStartCamera.addEventListener('click', async () => {
   els.btnStartCamera.disabled = true;
   els.btnSetRoi.disabled = false;
   showGestureHint();
+  // Camera is live → drop straight into aim mode. From here the rider has
+  // exactly one action: frame the gate inside the green reticle and tap
+  // Confirm ROI. The rest of the HUD/controls is hidden (CSS keys off
+  // body[data-aiming]) so nothing competes with the viewfinder.
+  enterAimMode();
 });
 
-els.btnSetRoi.addEventListener('click', async () => {
-  // Re-picking the ROI implies re-configuring the camera — any active session
-  // must stop first so its reference frame + observing streak don't get
-  // inherited into the new ROI (which would be nonsense).
+// Aim mode: body[data-aiming="true"] drives the CSS that hides HUD +
+// chrome and reveals the reticle. Entered when the camera first starts
+// and whenever the rider re-frames (tap thumbnail → stopSession →
+// deactivateRoiView → enterAimMode). Left when Confirm ROI commits.
+function enterAimMode() {
+  document.body.dataset.aiming = 'true';
+}
+function exitAimMode() {
+  document.body.dataset.aiming = 'false';
+}
+
+els.btnSetRoi.addEventListener('click', commitRoiFromReticle);
+
+// "Reticle-as-ROI": the green square in the middle of the screen is the
+// WYSIWYG target. The rider moves the video UNDER the reticle with
+// pinch/pan; whatever ends up inside the reticle at Confirm time becomes
+// the detector's ROI. This replaces the earlier "whole visible viewport =
+// ROI" flow (decision 008 evolution → decision 010) for two reasons:
+//   1. Large zoom-as-ROI rectangles held the subject in the ROI past the
+//      cooldown (see decision 009). A fixed reticle is smaller by default
+//      and forces deliberate targeting — fewer false 3 s finishes.
+//   2. Visually explicit: the rider sees EXACTLY what will be timed. No
+//      "is my whole screen the ROI?" guessing.
+//
+// Math. The reticle is a sibling of #viewport, fixed in screen space
+// (never transformed). The viewport applies `translate(tx,ty) scale(z)`
+// with origin 0,0 to its content. Screen point (sx, sy) corresponds to
+// content-intrinsic point ((sx-tx)/z, (sy-ty)/z). Reading the reticle's
+// screen rect via getBoundingClientRect and inverting the transform gives
+// the intrinsic CSS rect directly; mapCssRoiToVideoRoi then handles the
+// object-fit:cover conversion into video-pixel ROI as before.
+function commitRoiFromReticle() {
+  // Capture viewport transform BEFORE activateRoiView() — that call
+  // internally does viewport.reset() which zeroes tx/ty/z. If we read
+  // after, we'd always compute "full-frame ROI at z=1" regardless of how
+  // the rider aimed.
+  const W = viewport.intrinsicWidth();
+  const H = viewport.intrinsicHeight();
+  const z = viewport.z;
+  const tx = viewport.tx;
+  const ty = viewport.ty;
+  const r = els.reticle.getBoundingClientRect();
+  // #stage is position:fixed inset:0 and #viewport is inset:0 inside it,
+  // so the viewport's pre-transform origin lives at screen (0, 0). No
+  // need to subtract a stage offset here.
+  const cssRoi = {
+    x: (r.left - tx) / z,
+    y: (r.top - ty) / z,
+    w: r.width / z,
+    h: r.height / z,
+  };
+
+  const videoRoi = mapCssRoiToVideoRoi(cssRoi, els.video, W, H);
+
+  // Re-committing mid-session implies re-configuring the camera — stop
+  // the current session so its averaged reference frame and observing
+  // streak don't get inherited into the new ROI.
   if (sessionActive) stopSession();
   deactivateRoiView();
-  refreshSessionButton();
-  // Pinch-zoom stays active during the pick — that's the whole point.
-  // RoiPicker uses viewport.cssToIntrinsic(), so taps are always recorded
-  // in the untransformed coordinate system regardless of current zoom.
-  const cssRoi = await roiPicker.pick(viewport);
-  const videoRoi = mapCssRoiToVideoRoi(
-    cssRoi,
-    els.video,
-    viewport.intrinsicWidth(),
-    viewport.intrinsicHeight(),
-  );
+  exitAimMode();
   detector.setRoi(videoRoi);
   activateRoiView(videoRoi);
-  refreshSessionButton();
-  // ROI picked ⇒ the rider has committed to the framing; there is no value
-  // in forcing a second "Start session" tap right after. Auto-enter the
-  // hands-free loop straight away — Stop session is always reachable via
-  // tap-to-reveal if they change their mind. The detector threshold is
-  // pulled from the slider as part of startSession() → enterObserving()
-  // → process() building the reference frame.
   detector.setThreshold(parseFloat(els.threshold.value));
   startSession();
+  refreshSessionButton();
+}
+
+// Tap the ROI thumbnail during a hands-free session to re-frame the ROI.
+// stopSession() + deactivateRoiView() + enterAimMode() bring the rider
+// back to the live camera with the reticle showing, so they can re-aim
+// and press Confirm again. The pinch-zoom transform has been reset to
+// 1× by the previous activateRoiView() call, so aiming starts fresh.
+els.roiView.addEventListener('pointerdown', (ev) => {
+  if (!currentRoi) return;
+  // Stop propagation so the body listener doesn't also run revealControls()
+  // — the session is about to stop anyway, and the dueling state changes
+  // would flicker the controls panel in and out.
+  ev.stopPropagation();
+  if (sessionActive) stopSession();
+  deactivateRoiView();
+  enterAimMode();
+  refreshSessionButton();
 });
 
 // Session lifecycle button. Label swaps between "Start session" and

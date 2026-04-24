@@ -10,11 +10,12 @@ export default {
   'status.error': 'REVISA LA CÁMARA',
 
   'ui.startCamera': 'Iniciar cámara',
-  'ui.setRoi': 'Definir ROI',
+  'ui.setRoi': 'Definir ROI', // legacy key
+  'ui.confirmRoi': 'Confirmar ROI',
   'ui.startSession': 'Iniciar sesión',
   'ui.stopSession': 'Detener',
   'ui.cancel': 'Cancelar',
-  'ui.gestureHint': 'Pellizca para ampliar · Dos dedos para mover',
+  'ui.gestureHint': 'Encuadra la puerta en el cuadrado verde · Dos dedos para mover · Pulsa Confirmar ROI',
   'ui.threshold': 'Umbral',
   'ui.debug': 'Depuración',
   'ui.language': 'Idioma',

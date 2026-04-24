@@ -17,7 +17,13 @@
     </div>
     <canvas id="roi-view" hidden></canvas>
 
-    <div id="gesture-hint" class="gesture-hint" hidden data-i18n-key="ui.gestureHint">Pinch to zoom · Two-finger drag to pan</div>
+    <!-- Aim reticle: fixed green square at screen center. During aim mode
+         (body[data-aiming="true"]) this is the WYSIWYG ROI preview — whatever
+         lives inside the square at the moment the rider taps Confirm becomes
+         the detector's ROI. pointer-events:none so it never fights the pinch
+         gesture that moves the video underneath. See decisions/010. -->
+    <div id="reticle" class="reticle" aria-hidden="true"></div>
+    <div id="gesture-hint" class="gesture-hint" hidden data-i18n-key="ui.gestureHint">Pinch to place the gate inside the square · Two-finger drag to pan · Tap Confirm ROI when ready</div>
 
     <div id="hud">
       <div id="timer" class="timer">0.000</div>
@@ -52,7 +58,7 @@
 
     <div id="controls" class="controls">
       <button id="btn-start-camera" type="button" data-i18n-key="ui.startCamera">Start camera</button>
-      <button id="btn-set-roi" type="button" disabled data-i18n-key="ui.setRoi">Set ROI</button>
+      <button id="btn-set-roi" type="button" disabled data-i18n-key="ui.confirmRoi">Confirm ROI</button>
       <!-- Single lifecycle button: "Start session" when idle, "Stop session"
            while the hands-free loop is running. See app.js refreshSessionButton(). -->
       <button id="btn-session" type="button" class="primary" disabled data-i18n-key="ui.startSession">Start session</button>

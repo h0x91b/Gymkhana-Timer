@@ -10,11 +10,12 @@ export default {
   'status.error': 'ПРОВЕРЬ КАМЕРУ',
 
   'ui.startCamera': 'Включить камеру',
-  'ui.setRoi': 'Задать ROI',
+  'ui.setRoi': 'Задать ROI', // legacy key
+  'ui.confirmRoi': 'Подтвердить ROI',
   'ui.startSession': 'Начать сессию',
   'ui.stopSession': 'Остановить',
   'ui.cancel': 'Отмена',
-  'ui.gestureHint': 'Щипок — зум · Два пальца — двигать',
+  'ui.gestureHint': 'Щипком наведи створ в зелёный квадрат · Два пальца — двигать · «Подтвердить ROI»',
   'ui.threshold': 'Порог',
   'ui.debug': 'Отладка',
   'ui.language': 'Язык',

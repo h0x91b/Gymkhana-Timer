@@ -193,18 +193,26 @@ body[data-roi-active="true"] #cam {
 }
 
 /* Once a ROI is locked in, the timer is the main event. The ROI crop
-   shrinks to a small pill in the top-right corner — large enough to
-   verify that the detector is still watching the right spot, small
-   enough not to compete with the numbers. */
+   shrinks to a small pill — large enough to verify that the detector is
+   still watching the right spot, small enough not to compete with the
+   numbers. Anchored bottom-left per AGENTS.md §Session mode (~20vw ×
+   15vh, lower-left) and lifted above the reserved controls zone so it
+   stays visible even during the 5-second tap-to-reveal overlap. The
+   previous top-right position directly overlapped the hero timer in
+   portrait — can't live there. */
 body[data-roi-active="true"] #roi-view {
   inset: auto;
-  top: calc(env(safe-area-inset-top, 0px) + 16px);
-  right: 16px;
-  width: min(38vw, 240px);
-  height: min(22vh, 160px);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 96px);
+  left: 16px;
+  width: min(22vw, 180px);
+  height: min(15vh, 130px);
   border-radius: var(--radius-md);
   box-shadow: 0 0 0 1px var(--ring-warm), var(--shadow-whisper);
   object-fit: initial;
+  /* Tap the thumbnail during a hands-free session to re-pick the ROI
+     without digging through the tap-to-reveal controls panel. */
+  cursor: pointer;
+  pointer-events: auto;
 }
 
 #hud {
@@ -234,22 +242,33 @@ body[data-roi-active="true"] #hud {
 .timer {
   font-family: var(--font-serif);
   font-weight: 500;
-  font-size: clamp(84px, 20vw, 220px);
+  font-size: clamp(64px, 18vw, 200px);
   line-height: 1.1;
   letter-spacing: normal;
   font-variant-numeric: tabular-nums;
   color: var(--fg);
   background: rgba(250, 249, 245, 0.92);       /* Ivory with slight transparency */
-  padding: 4px 28px;
+  padding: 4px 24px;
   border-radius: var(--radius-lg);
   box-shadow: 0 0 0 1px var(--ring-warm), var(--shadow-whisper);
+  /* Portrait phones are our primary target. The timer renders 5 tabular
+     serif chars (e.g. "0.000") whose total width is ~2.75× the font-size;
+     capping growth by viewport WIDTH (max-width) and CLIPPING on the
+     horizontal plane guarantees we never spill past the screen edge the
+     way the old 40vh-only clamp did on 360–480 CSS-px Android phones. */
+  max-width: calc(100vw - 32px);
+  text-align: center;
   transition: font-size 220ms ease, padding 220ms ease;
 }
 
-/* Hero-sized timer once a ROI is active — the number becomes the page. */
+/* Hero-sized timer once a ROI is active — the number becomes the page.
+   min(18vw, 40vh) picks whichever constraint kicks in first: portrait is
+   width-bound (timer spans ~60vw), landscape is height-bound (~50vh).
+   Floor at 96px so the timer still feels "hero" on the narrowest phones;
+   ceiling at 360px so it doesn't dwarf desktop previews. */
 body[data-roi-active="true"] .timer {
-  font-size: clamp(160px, 40vh, 520px);
-  padding: 12px 40px;
+  font-size: clamp(96px, min(18vw, 40vh), 360px);
+  padding: 8px 24px;
   border-radius: var(--radius-xl);
 }
 
@@ -608,6 +627,95 @@ body[data-phase="error"] #controls {
 /* Debug-toggle checkbox — keep native but tint the check. */
 .debug-toggle input[type="checkbox"] {
   accent-color: var(--terracotta);
+}
+
+/* Aim reticle — the green target square that shows what will be captured
+   as the ROI. Fixed in screen space, pinned to the center. The rider
+   moves the camera content UNDER the reticle via pinch/pan; the reticle
+   itself never moves. Shown only while body[data-aiming="true"].
+   pointer-events:none so it cannot fight the pinch gesture.
+
+   Shape: true square — `aspect-ratio: 1` + `min(70vw, 70vh)` works in
+   both orientations without JS. 70% fills the screen enough to frame a
+   gate without committing so much that the ROI is "the whole view" —
+   it's deliberately smaller so the rider sees they have targeting
+   responsibility. */
+.reticle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: min(70vw, 70vh);
+  height: min(70vw, 70vh);
+  aspect-ratio: 1 / 1;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  border: 3px solid var(--signal-go);
+  border-radius: var(--radius-md);
+  /* Double-shadow: dark ring for contrast against bright backgrounds,
+     green glow for "active targeting" feel. */
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.45),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.45),
+    0 0 24px rgba(0, 216, 81, 0.35);
+  display: none;
+}
+
+/* Corner ticks — a subtle viewfinder cue that it's a targeting reticle,
+   not just a frame. Using pseudo-elements keeps markup clean. */
+.reticle::before,
+.reticle::after {
+  content: '';
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border: 3px solid var(--signal-go);
+}
+.reticle::before {
+  top: -3px;
+  left: -3px;
+  border-right: none;
+  border-bottom: none;
+}
+.reticle::after {
+  bottom: -3px;
+  right: -3px;
+  border-left: none;
+  border-top: none;
+}
+
+body[data-aiming="true"] .reticle {
+  display: block;
+}
+
+/* Aim mode: full camera feed, reticle centered, everything else gone.
+   The rider is concentrating on framing the gate; timer/history/debug
+   are active distractions at that moment. Only the Confirm ROI button
+   survives (and the language selector stays reachable for first-run
+   configuration — but gets hidden too because the user asked for a
+   SINGLE button). */
+body[data-aiming="true"] #hud {
+  display: none;
+}
+body[data-aiming="true"] #btn-start-camera,
+body[data-aiming="true"] #btn-session,
+body[data-aiming="true"] #btn-update,
+body[data-aiming="true"] .threshold,
+body[data-aiming="true"] .debug-toggle,
+body[data-aiming="true"] .lang-select {
+  display: none;
+}
+/* Make Confirm ROI the hero of the controls panel in aim mode. */
+body[data-aiming="true"] #btn-set-roi {
+  background: var(--terracotta);
+  color: var(--ivory);
+  border-radius: var(--radius-md);
+  box-shadow: 0 0 0 1px var(--terracotta);
+  font-size: 17px;
+  padding: 12px 24px;
+}
+body[data-aiming="true"] #btn-set-roi:not(:disabled):hover {
+  background: var(--terracotta-hover);
+  box-shadow: 0 0 0 1px var(--terracotta-hover);
 }
 
 /* Gesture hint — a translucent pill that appears for a few seconds after

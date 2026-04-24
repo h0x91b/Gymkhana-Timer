@@ -77,7 +77,7 @@ index.html        UI shell: <video>, <canvas> overlay, controls
 app.js            entry + session-mode state machine (IDLE → OBSERVING → ARMED → RUNNING → FINISHED → COOLDOWN → OBSERVING …)
 camera.js         getUserMedia + requestVideoFrameCallback wrapper
 detector.js       background subtraction on a downscaled ROI
-roi.js            tap-to-pick ROI on the overlay
+roi.js            legacy two-tap ROI picker — UNUSED (see decisions/008-zoom-as-roi.md)
 timer.js          timer display + speechSynthesis feedback
 storage.js        run history in localStorage
 style.css         fullscreen HUD styling

@@ -23,7 +23,10 @@ export class Viewport {
     this.tx = 0;
     this.ty = 0;
     this.minZ = 1;
-    this.maxZ = 6;
+    // maxZ 12× lets a rider prop the phone far from the gate and still frame
+    // a narrow ROI around just the start/finish line. 6× was fine for close
+    // setups but hit the ceiling from across the lot (decision 010).
+    this.maxZ = 12;
     this.pointers = new Map();
     this._gesture = null;
     this._attached = false;
