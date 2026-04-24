@@ -152,6 +152,30 @@ body[data-phase="finished"]  { background: var(--ivory); }
   overflow: hidden;                /* Clip the pinch-zoomed viewport */
 }
 
+.build-stamp {
+  position: absolute;
+  top: calc(env(safe-area-inset-top, 0px) + 8px);
+  right: calc(env(safe-area-inset-right, 0px) + 10px);
+  z-index: 10;
+  max-width: calc(100vw - 20px);
+  padding: 3px 7px;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  box-shadow: 0 0 0 1px var(--ring-warm);
+  color: var(--fg-3);
+  background: var(--ivory);
+  background: color-mix(in srgb, var(--ivory) 78%, transparent);
+  font-family: var(--font-mono);
+  font-size: clamp(9px, 2.2vw, 11px);
+  font-weight: 400;
+  line-height: 1.35;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 /* Viewport wraps the <video> + overlay and is the pinch/pan transform
    target. transform-origin 0 0 keeps the math simple in viewport.js:
    intrinsicPoint → visualPoint is a plain translate/scale pair. */
