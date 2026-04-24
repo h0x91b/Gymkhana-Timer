@@ -21,6 +21,9 @@ export class Detector {
     this._refAccum = null;
     this._refCount = 0;
     this._gray = null;
+    this._grayMean = 0;
+    this._referenceMean = 0;
+    this._lastBrightnessOffset = 0;
 
     this.threshold = 0.25;
     this.pixelDiffThreshold = 28; // per-channel delta to count as motion
@@ -64,6 +67,9 @@ export class Detector {
     this.reference = new Uint8ClampedArray(len);
     this._refAccum = new Uint32Array(len);
     this._hasPrevGray = false;
+    this._grayMean = 0;
+    this._referenceMean = 0;
+    this._lastBrightnessOffset = 0;
   }
 
   setThreshold(value) {
@@ -141,10 +147,14 @@ export class Detector {
     const { data } = this.ctx.getImageData(0, 0, this._downW, this._downH);
     const len = this._downW * this._downH;
     const gray = this._gray;
+    let sum = 0;
     for (let i = 0, j = 0; i < data.length; i += 4, j++) {
       // Luma (Rec. 601)
-      gray[j] = (data[i] * 77 + data[i + 1] * 150 + data[i + 2] * 29) >> 8;
+      const luma = (data[i] * 77 + data[i + 1] * 150 + data[i + 2] * 29) >> 8;
+      gray[j] = luma;
+      sum += luma;
     }
+    this._grayMean = sum / len;
     return gray;
   }
 
@@ -158,9 +168,13 @@ export class Detector {
       for (let i = 0; i < gray.length; i++) this._refAccum[i] += gray[i];
       this._refCount++;
       if (this._refCount >= REFERENCE_FRAMES) {
+        let refSum = 0;
         for (let i = 0; i < gray.length; i++) {
-          this.reference[i] = this._refAccum[i] / this._refCount;
+          const ref = this._refAccum[i] / this._refCount;
+          this.reference[i] = ref;
+          refSum += ref;
         }
+        this._referenceMean = refSum / gray.length;
         this._hasReference = true;
         // Reference just became valid — open the rising-edge gate so the
         // first armed trigger is free (no need for the subject to first
@@ -174,8 +188,13 @@ export class Detector {
     // Count motion pixels.
     let moved = 0;
     const movedNeeded = Math.ceil(gray.length * this.threshold);
+    // Phone cameras keep adjusting exposure/white balance after arming. A
+    // uniform luma shift across the ROI is not motion, so remove the current
+    // frame's mean brightness drift before comparing per-pixel differences.
+    const brightnessOffset = this._grayMean - this._referenceMean;
+    this._lastBrightnessOffset = brightnessOffset;
     for (let i = 0; i < gray.length; i++) {
-      if (Math.abs(gray[i] - this.reference[i]) > this.pixelDiffThreshold) {
+      if (Math.abs((gray[i] - this.reference[i]) - brightnessOffset) > this.pixelDiffThreshold) {
         moved++;
         if (moved >= movedNeeded) break;
       }
@@ -219,6 +238,6 @@ export class Detector {
 
   debugLine() {
     const gate = this._clearSinceTrigger ? 'open' : 'shut';
-    return `ratio=${this._lastRatio.toFixed(3)} still=${this._prevStillnessRatio.toFixed(3)} thr=${this.threshold.toFixed(2)} ref=${this._hasReference ? 'ok' : 'building'} gate=${gate}`;
+    return `ratio=${this._lastRatio.toFixed(3)} still=${this._prevStillnessRatio.toFixed(3)} drift=${this._lastBrightnessOffset.toFixed(1)} thr=${this.threshold.toFixed(2)} ref=${this._hasReference ? 'ok' : 'building'} gate=${gate}`;
   }
 }
