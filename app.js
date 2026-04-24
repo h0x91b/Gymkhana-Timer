@@ -1016,9 +1016,10 @@ document.body.dataset.debug = String(els.debugToggle.checked);
 //   - sw.js no longer calls skipWaiting() in 'install'; new versions sit in
 //     `waiting` until we post { type: 'SKIP_WAITING' }. That keeps the
 //     decision on the client side.
-//   - We poll registration.update() periodically and on tab re-focus so that
-//     new versions are discovered promptly (browsers otherwise re-check the
-//     SW file only on navigation, and at most every 24h).
+//   - We force an update check on every load, then poll registration.update()
+//     periodically and on tab re-focus so that new versions are discovered
+//     promptly (browsers otherwise re-check the SW file only on navigation,
+//     and at most every 24h).
 //   - Once a new SW is 'installed' with an existing controller, we either
 //     activate it immediately (safe state) or expose the Update button.
 //   - A 'controllerchange' listener performs the one-shot reload once the
@@ -1054,7 +1055,7 @@ function registerServiceWorker() {
   });
 
   navigator.serviceWorker
-    .register('./sw.js')
+    .register('./sw.js', { updateViaCache: 'none' })
     .then((registration) => {
       // Case 1: page loaded and a waiting SW was already present from a
       // previous session (user opened the PWA, closed it before deciding to
@@ -1076,6 +1077,7 @@ function registerServiceWorker() {
 
       // Poll for new SW files periodically and when the tab regains focus.
       const pollMs = 60_000;
+      registration.update().catch(() => {});
       setInterval(() => registration.update().catch(() => {}), pollMs);
       document.addEventListener('visibilitychange', () => {
         if (!document.hidden) registration.update().catch(() => {});
