@@ -1,0 +1,46 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.dev3.0/bin/dev3 task move --status in-progress --if-status-not review-by-ai || [ $? -eq 2 ]"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.dev3.0/bin/dev3 task move --status in-progress --if-status-not review-by-ai || [ $? -eq 2 ]"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.dev3.0/bin/dev3 task move --status in-progress --if-status-not review-by-ai || [ $? -eq 2 ]"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if ~/.dev3.0/bin/dev3 task move --status review-by-user --if-status in-progress --codex-stop-hook >/dev/null; then printf '{}'; else hook_exit_code=$?; if [ \"$hook_exit_code\" -eq 2 ]; then printf '{}'; else exit \"$hook_exit_code\"; fi; fi"
+          }
+        ]
+      }
+    ]
+  }
+}

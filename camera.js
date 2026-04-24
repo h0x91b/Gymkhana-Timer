@@ -7,6 +7,7 @@ export class Camera {
     this.stream = null;
     this._callback = null;
     this._rvfcId = null;
+    this._fallbackRafId = null;
   }
 
   async start({ facingMode = 'environment', frameRate = 60 } = {}) {
@@ -26,6 +27,10 @@ export class Camera {
   stop() {
     if (this._rvfcId && this.video.cancelVideoFrameCallback) {
       this.video.cancelVideoFrameCallback(this._rvfcId);
+    }
+    if (this._fallbackRafId) {
+      cancelAnimationFrame(this._fallbackRafId);
+      this._fallbackRafId = null;
     }
     this._callback = null;
     if (this.stream) {
@@ -51,11 +56,13 @@ export class Camera {
   }
 
   _fallback(cb) {
+    this._callback = cb;
     const start = performance.now();
     const loop = () => {
-      cb(this.video, { mediaTime: (performance.now() - start) / 1000 });
-      requestAnimationFrame(loop);
+      if (!this._callback) return;
+      this._callback(this.video, { mediaTime: (performance.now() - start) / 1000 });
+      this._fallbackRafId = requestAnimationFrame(loop);
     };
-    requestAnimationFrame(loop);
+    this._fallbackRafId = requestAnimationFrame(loop);
   }
 }

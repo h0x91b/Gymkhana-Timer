@@ -7,6 +7,7 @@ export class Timer {
     this._t0 = 0;
     this._running = false;
     this._rafId = 0;
+    this._lastText = '';
   }
 
   start(t0) {
@@ -54,6 +55,9 @@ export class Timer {
   }
 
   _render(seconds) {
-    this.el.textContent = seconds.toFixed(3);
+    const text = seconds.toFixed(3);
+    if (text === this._lastText) return;
+    this._lastText = text;
+    this.el.textContent = text;
   }
 }
