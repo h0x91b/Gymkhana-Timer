@@ -30,8 +30,9 @@ export class Detector {
     this._referenceMean = 0;
     this._lastBrightnessOffset = 0;
     this._lastReferenceRefreshAt = -Infinity;
+    this._lastReferenceRefreshState = 'idle';
 
-    this.threshold = 0.25;
+    this.threshold = 0.35;
     this.pixelDiffThreshold = 28; // per-channel delta to count as motion
     this._lastTriggerAt = -Infinity;
     this.cooldownSeconds = COOLDOWN_SECONDS;
@@ -80,6 +81,7 @@ export class Detector {
     this._referenceMean = 0;
     this._lastBrightnessOffset = 0;
     this._lastReferenceRefreshAt = -Infinity;
+    this._lastReferenceRefreshState = 'idle';
   }
 
   setThreshold(value) {
@@ -118,6 +120,14 @@ export class Detector {
   // Last stillness ratio reported by observeStillness(). For debug overlays.
   lastStillnessRatio() {
     return this._prevStillnessRatio;
+  }
+
+  lastMotionRatio() {
+    return this._lastRatio;
+  }
+
+  clearReferenceRefreshStatus() {
+    this._lastReferenceRefreshState = 'idle';
   }
 
   // Forget the previous-frame snapshot so the next observeStillness() call
@@ -199,7 +209,8 @@ export class Detector {
   }
 
   refreshReferenceSafely(video, metadata, {
-    clearRatioThreshold,
+    driftRatioThreshold,
+    maxRatioThreshold,
     stillnessThreshold,
     stableDuration,
     minFrames,
@@ -209,14 +220,27 @@ export class Detector {
   }) {
     if (!this.roi || !this._hasReference) return false;
     if (metadata.mediaTime - this._lastReferenceRefreshAt < minInterval) {
+      const remaining = minInterval - (metadata.mediaTime - this._lastReferenceRefreshAt);
+      this._lastReferenceRefreshState = `wait:${remaining.toFixed(1)}s`;
       this._resetCandidateReference();
       return false;
     }
 
     const gray = this._readRoiGray(video);
-    const activeRatio = this._motionRatioAgainstReference(gray, clearRatioThreshold);
+    const activeRatio = this._motionRatioAgainstReference(gray, maxRatioThreshold);
     const stillnessRatio = this._measureStillness(gray, stillnessThreshold);
-    if (activeRatio >= clearRatioThreshold || stillnessRatio >= stillnessThreshold) {
+    if (activeRatio < driftRatioThreshold) {
+      this._lastReferenceRefreshState = 'idle';
+      this._resetCandidateReference();
+      return false;
+    }
+    if (activeRatio >= maxRatioThreshold) {
+      this._lastReferenceRefreshState = 'blocked:high';
+      this._resetCandidateReference();
+      return false;
+    }
+    if (stillnessRatio >= stillnessThreshold) {
+      this._lastReferenceRefreshState = 'blocked:motion';
       this._resetCandidateReference();
       return false;
     }
@@ -224,6 +248,7 @@ export class Detector {
     if (!this._candidateCount) this._candidateStartedAt = metadata.mediaTime;
     for (let i = 0; i < gray.length; i++) this._candidateAccum[i] += gray[i];
     this._candidateCount++;
+    this._lastReferenceRefreshState = `capture:${this._candidateCount}/${minFrames}`;
 
     const candidateAge = metadata.mediaTime - this._candidateStartedAt;
     if (this._candidateCount < minFrames || candidateAge < stableDuration) return false;
@@ -240,6 +265,7 @@ export class Detector {
     }
     this._referenceMean = refSum / gray.length;
     this._lastReferenceRefreshAt = metadata.mediaTime;
+    this._lastReferenceRefreshState = mode === 'blend' ? 'blend' : 'replace';
     this._resetCandidateReference();
     return true;
   }
@@ -314,6 +340,6 @@ export class Detector {
 
   debugLine() {
     const gate = this._clearSinceTrigger ? 'open' : 'shut';
-    return `ratio=${this._lastRatio.toFixed(3)} still=${this._prevStillnessRatio.toFixed(3)} drift=${this._lastBrightnessOffset.toFixed(1)} thr=${this.threshold.toFixed(2)} ref=${this._hasReference ? 'ok' : 'building'} cand=${this._candidateCount} gate=${gate}`;
+    return `ratio=${this._lastRatio.toFixed(3)} still=${this._prevStillnessRatio.toFixed(3)} drift=${this._lastBrightnessOffset.toFixed(1)} thr=${this.threshold.toFixed(2)} ref=${this._hasReference ? 'ok' : 'building'} refresh=${this._lastReferenceRefreshState} gate=${gate}`;
   }
 }

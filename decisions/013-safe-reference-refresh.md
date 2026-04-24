@@ -10,12 +10,12 @@ Long waits before a start and 90-120 second routes can outlive the original stil
 
 ## Decision
 
-Keep the active reference live for every start and finish check, then build a separate clean candidate through `Detector.refreshReferenceSafely()`. `ARMED` can hard-replace the active reference after a stable clean window, while `RUNNING` only blends a small percentage of the candidate after an initial guard period.
+Keep the active reference live for every start and finish check, with a default trigger threshold of 0.35. Build a separate candidate through `Detector.refreshReferenceSafely()` only when active motion ratio has drifted above 0.10 but remains safely below the trigger threshold. `ARMED` can hard-replace the active reference after a stable drift window, while `RUNNING` only blends a small percentage of the candidate after an initial guard period; successful promotions are rate-limited to at most once every 5 seconds.
 
 ## Risks
 
-A very slow object entering the ROI could still contribute a few clean-looking pixels to the candidate before crossing the strict clear threshold. The refresh thresholds therefore stay far below the trigger threshold, and running-mode promotion uses a small blend rather than a hard swap.
+A very slow object entering the ROI could still contribute a few stable-looking pixels to the candidate before crossing the trigger threshold. The refresh band therefore starts at 0.10 but caps below the active trigger threshold, and running-mode promotion uses a small blend rather than a hard swap.
 
 ## Alternatives considered
 
-Periodic full re-arm was rejected because it makes detection blind for several frames. Continuous exponential averaging of every clear-ish frame was rejected because it can learn the rider or a shadow into the background too aggressively. Relying only on mean brightness normalization was rejected because it does not handle local light changes.
+Periodic full re-arm was rejected because it makes detection blind for several frames. Timer-only refresh was rejected because it can do work while ratio is still healthy and miss the moment when drift actually appears. Continuous exponential averaging of every clear-ish frame was rejected because it can learn the rider or a shadow into the background too aggressively.

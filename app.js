@@ -84,12 +84,12 @@ const TAP_REVEAL_MS = 5000;              // controls stay visible this long afte
 const NOT_READY_VOICE_INTERVAL = 15.0;   // seconds; spoken while the session is active but not yet ARMED
 const ROI_PREVIEW_FPS = 8;               // thumbnail is a framing aid, not a precision signal
 const DEBUG_RENDER_INTERVAL = 0.25;       // seconds; avoid per-frame string churn
-const REFERENCE_REFRESH_CLEAR_RATIO = 0.04;      // only frames far below trigger threshold can update reference
+const REFERENCE_REFRESH_DRIFT_RATIO = 0.10;      // refresh only when active ratio shows real reference drift
+const REFERENCE_REFRESH_MAX_RATIO = 0.80;        // fraction of trigger threshold; above this is too close to crossing
 const REFERENCE_REFRESH_STILLNESS = 0.03;        // stricter than OBSERVING stability; refresh must be boring
 const REFERENCE_REFRESH_DURATION = 1.5;          // seconds of clean frames before applying a candidate
 const REFERENCE_REFRESH_MIN_FRAMES = 8;          // protects very low-FPS streams from one-frame refreshes
-const ARMED_REFERENCE_REFRESH_INTERVAL = 10.0;   // seconds between hard swaps while waiting to start
-const RUNNING_REFERENCE_REFRESH_INTERVAL = 8.0;  // seconds between slow blends during long runs
+const REFERENCE_REFRESH_INTERVAL = 5.0;          // seconds between successful candidate promotions
 const RUNNING_REFERENCE_REFRESH_GUARD = 8.0;     // never adapt while the bike may still be clearing the line
 const RUNNING_REFERENCE_REFRESH_BLEND = 0.06;    // slow drift correction; finish detection stays dominant
 
@@ -696,18 +696,22 @@ function onFrame(frame, metadata) {
 
 function refreshReferenceIfSafe(frame, metadata, mode) {
   const isRunning = mode === 'running';
-  const clearRatioThreshold = Math.min(
-    REFERENCE_REFRESH_CLEAR_RATIO,
-    detector.threshold * 0.2,
+  if (detector.lastMotionRatio() < REFERENCE_REFRESH_DRIFT_RATIO) {
+    detector.clearReferenceRefreshStatus();
+    return;
+  }
+
+  const maxRatioThreshold = Math.max(
+    REFERENCE_REFRESH_DRIFT_RATIO + 0.02,
+    detector.threshold * REFERENCE_REFRESH_MAX_RATIO,
   );
   detector.refreshReferenceSafely(frame, metadata, {
-    clearRatioThreshold,
+    driftRatioThreshold: REFERENCE_REFRESH_DRIFT_RATIO,
+    maxRatioThreshold,
     stillnessThreshold: REFERENCE_REFRESH_STILLNESS,
     stableDuration: REFERENCE_REFRESH_DURATION,
     minFrames: REFERENCE_REFRESH_MIN_FRAMES,
-    minInterval: isRunning
-      ? RUNNING_REFERENCE_REFRESH_INTERVAL
-      : ARMED_REFERENCE_REFRESH_INTERVAL,
+    minInterval: REFERENCE_REFRESH_INTERVAL,
     mode: isRunning ? 'blend' : 'replace',
     blendAlpha: isRunning ? RUNNING_REFERENCE_REFRESH_BLEND : 1,
   });
