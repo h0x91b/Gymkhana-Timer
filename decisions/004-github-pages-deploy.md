@@ -44,12 +44,11 @@ Add `.github/workflows/pages.yml`: on push to `master` (and manual
 
 ## Risks
 
-- **Stale service worker cache.** Users won't see a deployed update until
-  `CACHE_VERSION` in `sw.js` is bumped. The existing
-  client-driven update flow (see decision 003) handles this correctly, but
-  it relies on the agent/author bumping the version on every release. If
-  the bump is forgotten, installed clients keep serving the old bundle
-  indefinitely.
+- **Stale service worker cache.** Users won't see a deployed update unless
+  `CACHE_VERSION` in the published `sw.js` changes. The deploy job now
+  rewrites it from GitHub Actions metadata before upload, so the
+  client-driven update flow (see decision 003) gets a fresh version on
+  every production deploy without relying on a manual source bump.
 - **The repo is now publicly browsable.** Pages requires `public` repo
   visibility on the free plan. Everything already committed (including
   `AGENTS.md`, `decisions/`, `change-logs/`) becomes world-readable. No
