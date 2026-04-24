@@ -17,8 +17,10 @@ export class Detector {
     this.ctx = this.canvas.getContext('2d', { willReadFrequently: true });
 
     this.reference = null; // Uint8ClampedArray (grayscale downscaled)
+    this._hasReference = false;
     this._refAccum = null;
     this._refCount = 0;
+    this._gray = null;
 
     this.threshold = 0.25;
     this.pixelDiffThreshold = 28; // per-channel delta to count as motion
@@ -40,13 +42,13 @@ export class Detector {
     // `reference` so an OBSERVING-phase stability check cannot pollute the
     // reference that process() will use after arming.
     this._prevGray = null;
+    this._hasPrevGray = false;
     this._prevStillnessRatio = 1;
   }
 
   setRoi(roi) {
     this.roi = roi;
-    this.reference = null;
-    this._refAccum = null;
+    this._hasReference = false;
     this._refCount = 0;
 
     const longSide = Math.max(roi.w, roi.h);
@@ -55,6 +57,13 @@ export class Detector {
     this._downH = Math.max(1, Math.round(roi.h * this._scale));
     this.canvas.width = this._downW;
     this.canvas.height = this._downH;
+
+    const len = this._downW * this._downH;
+    this._gray = new Uint8ClampedArray(len);
+    this._prevGray = new Uint8ClampedArray(len);
+    this.reference = new Uint8ClampedArray(len);
+    this._refAccum = new Uint32Array(len);
+    this._hasPrevGray = false;
   }
 
   setThreshold(value) {
@@ -62,8 +71,8 @@ export class Detector {
   }
 
   captureReference() {
-    this.reference = null;
-    this._refAccum = null;
+    this._hasReference = false;
+    if (this._refAccum) this._refAccum.fill(0);
     this._refCount = 0;
     // Fresh reference ⇒ the rising-edge gate must be open so the NEXT
     // "clear → dirty" transition (the bike entering the ROI) fires a
@@ -75,7 +84,7 @@ export class Detector {
   // Used by app.js to decide when OBSERVING can hand off to ARMED — we need a
   // valid reference in place before we start trusting process() triggers.
   hasReference() {
-    return this.reference !== null;
+    return this._hasReference;
   }
 
   // Frame-to-frame stillness probe. Returns the ratio of pixels that changed
@@ -83,19 +92,28 @@ export class Detector {
   // Ignores cooldown/threshold entirely — this is an information channel for
   // app.js, not a trigger. Must be called on every frame during OBSERVING so
   // the internal "previous" snapshot stays fresh.
-  observeStillness(video) {
+  observeStillness(video, stillnessThreshold = 1) {
     if (!this.roi) return 1;
     const gray = this._readRoiGray(video);
-    if (!this._prevGray) {
-      this._prevGray = gray;
+    if (!this._hasPrevGray) {
+      this._prevGray.set(gray);
+      this._hasPrevGray = true;
       return 1;
     }
     let moved = 0;
+    const movedLimit = Math.floor(gray.length * stillnessThreshold);
     for (let i = 0; i < gray.length; i++) {
-      if (Math.abs(gray[i] - this._prevGray[i]) > this.pixelDiffThreshold) moved++;
+      if (Math.abs(gray[i] - this._prevGray[i]) > this.pixelDiffThreshold) {
+        moved++;
+        if (moved > movedLimit) {
+          this._prevGray.set(gray);
+          this._prevStillnessRatio = moved / gray.length;
+          return this._prevStillnessRatio;
+        }
+      }
     }
     const ratio = moved / gray.length;
-    this._prevGray = gray;
+    this._prevGray.set(gray);
     this._prevStillnessRatio = ratio;
     return ratio;
   }
@@ -110,7 +128,7 @@ export class Detector {
   // for COOLDOWN) so a stale snapshot from two phases ago does not dominate
   // the first stillness reading of the new phase.
   resetStillness() {
-    this._prevGray = null;
+    this._hasPrevGray = false;
     this._prevStillnessRatio = 1;
   }
 
@@ -122,7 +140,7 @@ export class Detector {
     );
     const { data } = this.ctx.getImageData(0, 0, this._downW, this._downH);
     const len = this._downW * this._downH;
-    const gray = new Uint8ClampedArray(len);
+    const gray = this._gray;
     for (let i = 0, j = 0; i < data.length; i += 4, j++) {
       // Luma (Rec. 601)
       gray[j] = (data[i] * 77 + data[i + 1] * 150 + data[i + 2] * 29) >> 8;
@@ -136,16 +154,14 @@ export class Detector {
     const gray = this._readRoiGray(video);
 
     // Still building reference average.
-    if (!this.reference) {
-      if (!this._refAccum) this._refAccum = new Float32Array(gray.length);
+    if (!this._hasReference) {
       for (let i = 0; i < gray.length; i++) this._refAccum[i] += gray[i];
       this._refCount++;
       if (this._refCount >= REFERENCE_FRAMES) {
-        const ref = new Uint8ClampedArray(gray.length);
         for (let i = 0; i < gray.length; i++) {
-          ref[i] = this._refAccum[i] / this._refCount;
+          this.reference[i] = this._refAccum[i] / this._refCount;
         }
-        this.reference = ref;
+        this._hasReference = true;
         // Reference just became valid — open the rising-edge gate so the
         // first armed trigger is free (no need for the subject to first
         // cross the ROI clear, which would be impossible before the first
@@ -157,8 +173,12 @@ export class Detector {
 
     // Count motion pixels.
     let moved = 0;
+    const movedNeeded = Math.ceil(gray.length * this.threshold);
     for (let i = 0; i < gray.length; i++) {
-      if (Math.abs(gray[i] - this.reference[i]) > this.pixelDiffThreshold) moved++;
+      if (Math.abs(gray[i] - this.reference[i]) > this.pixelDiffThreshold) {
+        moved++;
+        if (moved >= movedNeeded) break;
+      }
     }
     const ratio = moved / gray.length;
     this._lastRatio = ratio;
@@ -199,6 +219,6 @@ export class Detector {
 
   debugLine() {
     const gate = this._clearSinceTrigger ? 'open' : 'shut';
-    return `ratio=${this._lastRatio.toFixed(3)} still=${this._prevStillnessRatio.toFixed(3)} thr=${this.threshold.toFixed(2)} ref=${this.reference ? 'ok' : 'building'} gate=${gate}`;
+    return `ratio=${this._lastRatio.toFixed(3)} still=${this._prevStillnessRatio.toFixed(3)} thr=${this.threshold.toFixed(2)} ref=${this._hasReference ? 'ok' : 'building'} gate=${gate}`;
   }
 }

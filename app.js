@@ -81,6 +81,8 @@ const BETWEEN_RUNS_COOLDOWN = 2.5;       // seconds between FINISHED and the nex
 const FINISHED_FLASH = 1.0;              // seconds of ivory flash right after finish
 const TAP_REVEAL_MS = 5000;              // controls stay visible this long after a tap during hands-free
 const NOT_READY_VOICE_INTERVAL = 15.0;   // seconds; spoken while the session is active but not yet ARMED
+const ROI_PREVIEW_FPS = 8;               // thumbnail is a framing aid, not a precision signal
+const DEBUG_RENDER_INTERVAL = 0.25;       // seconds; avoid per-frame string churn
 
 const els = {
   video: document.getElementById('cam'),
@@ -141,6 +143,12 @@ let lastFrameMediaTime = 0;      // last frame's mediaTime, cached for non-frame
 let lastRunElapsed = null;       // seconds; shown on the big timer between runs
 let tapRevealTimer = 0;          // setTimeout handle for controls auto-hide
 let nextNotReadyVoiceAt = 0;     // mediaTime when we should next speak "not ready" (0 = disabled / session off)
+let roiPreviewLastDrawAt = -Infinity;
+let debugLastRenderAt = -Infinity;
+let cooldownLastText = '';
+let cooldownLastPct = null;
+let sublineLastVisible = null;
+let sublineLastText = '';
 
 // FPS / timing-precision tracking.
 // Rolling buffer of the last N frame intervals (seconds), sourced from
@@ -402,13 +410,24 @@ window.addEventListener('orientationchange', resizeRoiViewCanvas);
 function updateCooldownIndicator(mediaTime) {
   if (state !== STATE.COOLDOWN) {
     if (!els.cooldown.hidden) els.cooldown.hidden = true;
+    cooldownLastText = '';
+    cooldownLastPct = null;
     return;
   }
   const remaining = Math.max(0, BETWEEN_RUNS_COOLDOWN - (mediaTime - cooldownStartedAt));
-  els.cooldown.hidden = false;
-  els.cooldownText.textContent = `${remaining.toFixed(1)}s`;
-  const pct = Math.max(0, Math.min(100, (remaining / BETWEEN_RUNS_COOLDOWN) * 100));
-  els.cooldownFill.style.width = `${pct}%`;
+  if (els.cooldown.hidden) els.cooldown.hidden = false;
+
+  const text = `${remaining.toFixed(1)}s`;
+  if (text !== cooldownLastText) {
+    cooldownLastText = text;
+    els.cooldownText.textContent = text;
+  }
+
+  const pct = Math.round(Math.max(0, Math.min(100, (remaining / BETWEEN_RUNS_COOLDOWN) * 100)));
+  if (pct !== cooldownLastPct) {
+    cooldownLastPct = pct;
+    els.cooldownFill.style.width = `${pct}%`;
+  }
 }
 
 // The secondary read-out under the big timer. Content is purely a function of
@@ -417,7 +436,11 @@ function updateCooldownIndicator(mediaTime) {
 function updateSubline(mediaTime) {
   const el = els.timerSubline;
   if (!sessionActive) {
-    el.hidden = true;
+    if (sublineLastVisible !== false) {
+      sublineLastVisible = false;
+      el.hidden = true;
+    }
+    sublineLastText = '';
     return;
   }
   let text = '';
@@ -449,8 +472,15 @@ function updateSubline(mediaTime) {
     default:
       visible = false;
   }
-  el.hidden = !visible;
-  if (visible) el.textContent = text;
+  if (visible !== sublineLastVisible) {
+    sublineLastVisible = visible;
+    el.hidden = !visible;
+  }
+  if (visible && text !== sublineLastText) {
+    sublineLastText = text;
+    el.textContent = text;
+  }
+  if (!visible) sublineLastText = '';
 }
 
 // Render the last N runs from storage. Fills the HUD space below the timer
@@ -568,8 +598,11 @@ function stopSession() {
   els.controls.classList.remove('tap-revealed');
 }
 
-function drawRoiView(video) {
+function drawRoiView(video, mediaTime) {
   if (!currentRoi) return;
+  if (mediaTime - roiPreviewLastDrawAt < 1 / ROI_PREVIEW_FPS) return;
+  roiPreviewLastDrawAt = mediaTime;
+
   const { width: cw, height: ch } = els.roiView;
   roiViewCtx.clearRect(0, 0, cw, ch);
   // Letterbox — preserve the ROI's aspect ratio so the image doesn't stretch.
@@ -593,7 +626,7 @@ function onFrame(frame, metadata) {
   lastFrameMediaTime = mt;
   updateFpsReadout(mt);
   // Render the ROI crop (no-op if the user hasn't set a ROI yet).
-  drawRoiView(frame);
+  drawRoiView(frame, mt);
   // The small detector-cooldown pill (debug only) ticks every frame.
   updateCooldownIndicator(mt);
 
@@ -606,7 +639,8 @@ function onFrame(frame, metadata) {
   updatePhase();
   updateSubline(mt);
 
-  if (!els.debug.hidden) {
+  if (!els.debug.hidden && mt - debugLastRenderAt >= DEBUG_RENDER_INTERVAL) {
+    debugLastRenderAt = mt;
     els.debug.textContent = detector.debugLine();
   }
 }
@@ -635,7 +669,7 @@ function stepSession(frame, metadata) {
         timer.speak(t('voice.notReady'));
         nextNotReadyVoiceAt = mt + NOT_READY_VOICE_INTERVAL;
       }
-      const still = detector.observeStillness(frame);
+      const still = detector.observeStillness(frame, STABILITY_THRESHOLD);
       if (still < STABILITY_THRESHOLD) {
         if (!stableSince) stableSince = mt;
         // Stable for long enough → start capturing reference. process()
