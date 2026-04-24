@@ -287,7 +287,7 @@ body[data-phase="error"] .timer {
   padding: 0;
 }
 
-/* Secondary sub-line under the timer: 15s countdown, "Ready to go", previous
+/* Secondary sub-line under the timer: "Ready to go", previous
    run time, or observing hint. Deliberately small and subordinate — the
    large number is the main event; this is the colour-neutral caption. */
 .timer-subline {
@@ -349,8 +349,8 @@ body[data-phase="error"] .status {
 }
 body[data-debug="true"] .status { display: inline-block; }
 
-/* Cooldown pill — the canonical indicator for the 10-second between-runs
-   wait. Big, legible from a distance, with a draining progress bar so the
+/* Cooldown pill — the canonical indicator for the between-runs wait.
+   Big, legible from a distance, with a draining progress bar so the
    rider doesn't have to read the number. Only rendered during COOLDOWN;
    outside that phase it's hidden. */
 .cooldown {

@@ -27,13 +27,13 @@
 //     │    voice announces "finish, N.N seconds", run saved to storage,
 //     │    phase briefly flashes ivory.
 //     └── FINISHED_FLASH seconds elapse
-//   COOLDOWN (10s)
+//   COOLDOWN (2.5s)
 //     │    Big timer keeps the last run's time displayed. The cooldown pill
-//     │    below the timer shows a draining progress bar and whole-second
-//     │    countdown. Phase = "cooldown" (amber background). After 10s we
+//     │    below the timer shows a draining progress bar and countdown.
+//     │    Phase = "cooldown" (amber background). After 2.5s we
 //     │    loop back to OBSERVING. The rider NEVER has to walk up to the
 //     │    phone in this loop — that's the whole point.
-//     └── 10s done
+//     └── 2.5s done
 //   OBSERVING → ARMED → …
 //
 // Stop session is the only thing that exits the loop; a tap anywhere during
@@ -68,7 +68,7 @@ const STATE = Object.freeze({
   ARMED: 'ARMED',         // reference captured, waiting for first motion
   RUNNING: 'RUNNING',     // actively timing a run
   FINISHED: 'FINISHED',   // brief post-finish flash
-  COOLDOWN: 'COOLDOWN',   // 10s between-runs countdown
+  COOLDOWN: 'COOLDOWN',   // 2.5s between-runs countdown
   ERROR: 'ERROR',         // not a true state — a visual overlay on OBSERVING
 });
 
@@ -77,7 +77,7 @@ const STATE = Object.freeze({
 const STABILITY_THRESHOLD = 0.04;        // ≤ 4% pixel delta between frames = "still"
 const STABILITY_DURATION = 2.0;          // seconds of continuous stillness to arm
 const OBSERVING_ERROR_TIMEOUT = 20.0;    // seconds; past this OBSERVING flips to coral "come over" signal
-const BETWEEN_RUNS_COOLDOWN = 10.0;      // seconds between FINISHED and the next OBSERVING
+const BETWEEN_RUNS_COOLDOWN = 2.5;       // seconds between FINISHED and the next OBSERVING
 const FINISHED_FLASH = 1.0;              // seconds of ivory flash right after finish
 const TAP_REVEAL_MS = 5000;              // controls stay visible this long after a tap during hands-free
 const NOT_READY_VOICE_INTERVAL = 15.0;   // seconds; spoken while the session is active but not yet ARMED
@@ -390,12 +390,12 @@ window.addEventListener('resize', resizeRoiViewCanvas);
 window.addEventListener('orientationchange', resizeRoiViewCanvas);
 
 /**
- * Cooldown pill — the canonical 10-second between-runs indicator. The pill
+ * Cooldown pill — the canonical between-runs indicator. The pill
  * is intentionally prominent (bigger text, thicker bar) because it's a
  * first-class rider-facing signal, not a debug affordance. Rendered only
  * while we are actually in STATE.COOLDOWN.
  *
- * The pill is the ONLY place the 10-second countdown is displayed — during
+ * The pill is the ONLY place the countdown is displayed — during
  * COOLDOWN the text sub-line above is suppressed so the rider has a single
  * unambiguous read (see updateSubline).
  */
@@ -406,7 +406,7 @@ function updateCooldownIndicator(mediaTime) {
   }
   const remaining = Math.max(0, BETWEEN_RUNS_COOLDOWN - (mediaTime - cooldownStartedAt));
   els.cooldown.hidden = false;
-  els.cooldownText.textContent = `${Math.ceil(remaining)}s`;
+  els.cooldownText.textContent = `${remaining.toFixed(1)}s`;
   const pct = Math.max(0, Math.min(100, (remaining / BETWEEN_RUNS_COOLDOWN) * 100));
   els.cooldownFill.style.width = `${pct}%`;
 }

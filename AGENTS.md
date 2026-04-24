@@ -95,15 +95,15 @@ State machine lives in `app.js`. The detector is stateless w.r.t. the run — it
 The app's entire value is "don't make the rider walk back to the phone between runs." Any UI change must preserve this. Full spec lives in [`TZ.md` → Hands-free session mode](./TZ.md#hands-free-session-mode-основной-режим-эксплуатации); the rules agents must always honor:
 
 - **Single entry point after setup.** One button — `Start session` — hands control over to the auto loop. No `Arm` / `Reset` buttons in the hot path.
-- **States:** `IDLE` → `OBSERVING` → `ARMED` → `RUNNING` → `FINISHED` → `COOLDOWN(15s)` → `OBSERVING` → `ARMED` → … The rider never triggers a transition manually except `Start session` and `Stop session`.
-- **Auto re-arm trigger:** 15-second cooldown after `FINISHED`, then `OBSERVING` waits until the ROI is empty and stable for ≥ 2 seconds, captures a fresh reference frame (compensates ambient-light drift), and moves to `ARMED`.
+- **States:** `IDLE` → `OBSERVING` → `ARMED` → `RUNNING` → `FINISHED` → `COOLDOWN(2.5s)` → `OBSERVING` → `ARMED` → … The rider never triggers a transition manually except `Start session` and `Stop session`.
+- **Auto re-arm trigger:** 2.5-second cooldown after `FINISHED`, then `OBSERVING` waits until the ROI is empty and stable for ≥ 2 seconds, captures a fresh reference frame (compensates ambient-light drift), and moves to `ARMED`.
 - **Timer is the king of the screen.** In every post-setup state the route timer fills ~50vh, center, `--font-serif`, `font-variant-numeric: tabular-nums`. Status is communicated by timer colour, not a separate large label.
 - **Timer content by state:**
   - `RUNNING` — live elapsed time (ticking).
   - `FINISHED`, `COOLDOWN`, `OBSERVING`, `ARMED` — the **last completed route time** stays displayed unchanged until the next `RUNNING` start; never auto-reset to zero.
   - First-ever `OBSERVING`/`ARMED` in a session with no prior run — `0.000` placeholder.
 - **Secondary readout** (smaller, below the timer):
-  - `COOLDOWN` — 15s countdown, reverse, tabular-nums.
+  - `COOLDOWN` — 2.5s countdown, reverse, tabular-nums.
   - `ARMED` — label `Ready to go` (localized), replaces the countdown once it hits zero.
   - `RUNNING` — previous route time, de-emphasized, so the rider can compare on the fly.
 - **Voice cues** (primary remote feedback channel, since the phone is far from the rider):

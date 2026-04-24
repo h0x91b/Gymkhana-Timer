@@ -1,0 +1,1 @@
+Reduced the hands-free between-runs cooldown from 10 seconds to 2.5 seconds, updated the countdown display to show tenths of a second, synchronized the session-mode documentation with the new timing, and ignored local Codex/dev-3.0 hook files.

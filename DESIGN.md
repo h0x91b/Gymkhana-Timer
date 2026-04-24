@@ -22,7 +22,7 @@ Tokens live in `style.css` under `--signal-*`:
 | Phase | Token | Hex | Meaning |
 |---|---|---|---|
 | `armed` (ready to go) | `--signal-go` | `#00d851` | Pure vivid green — "gas it". Traffic-light saturation on purpose. **No pulse** (tried ±6 % brightness, it read as flicker from distance and was dropped). |
-| `cooldown` (10 s between-runs countdown) **and** `observing` for the first ≤ 20 s | `--signal-wait` | `#ff8c00` | Pure orange — "not yet, wait". Traffic-light amber. |
+| `cooldown` (2.5 s between-runs countdown) **and** `observing` for the first ≤ 20 s | `--signal-wait` | `#ff8c00` | Pure orange — "not yet, wait". Traffic-light amber. |
 | `observing` after > 20 s of failed stabilisation (error/attention state) | `--signal-error` | `#ff2020` | Pure bright red — "come over, something is wrong". |
 | `running` | `--parchment` (default) | `#f5f4ed` | Neutral — timer is the only thing changing; avoid distracting the rider mid-run. |
 | `finished` (short ≈ 1 s flash) | `--ivory` → `--signal-wait` | cross-fade | Momentary confirmation before dropping into cooldown. |
