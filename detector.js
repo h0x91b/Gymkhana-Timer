@@ -5,6 +5,8 @@
 // - observeStillness(video) returns frame-to-frame delta ratio (no reference
 //   needed). Used by the session-mode OBSERVING state to decide when the ROI
 //   has been empty long enough to safely capture a new reference and arm.
+// - refreshReferenceSafely(video, metadata, options) builds a background
+//   candidate while the active reference remains live for start/finish detection.
 
 const REFERENCE_FRAMES = 5;
 const COOLDOWN_SECONDS = 3;
@@ -20,12 +22,17 @@ export class Detector {
     this._hasReference = false;
     this._refAccum = null;
     this._refCount = 0;
+    this._candidateAccum = null;
+    this._candidateCount = 0;
+    this._candidateStartedAt = 0;
     this._gray = null;
     this._grayMean = 0;
     this._referenceMean = 0;
     this._lastBrightnessOffset = 0;
+    this._lastReferenceRefreshAt = -Infinity;
+    this._lastReferenceRefreshState = 'idle';
 
-    this.threshold = 0.25;
+    this.threshold = 0.35;
     this.pixelDiffThreshold = 28; // per-channel delta to count as motion
     this._lastTriggerAt = -Infinity;
     this.cooldownSeconds = COOLDOWN_SECONDS;
@@ -66,10 +73,15 @@ export class Detector {
     this._prevGray = new Uint8ClampedArray(len);
     this.reference = new Uint8ClampedArray(len);
     this._refAccum = new Uint32Array(len);
+    this._candidateAccum = new Uint32Array(len);
+    this._candidateCount = 0;
+    this._candidateStartedAt = 0;
     this._hasPrevGray = false;
     this._grayMean = 0;
     this._referenceMean = 0;
     this._lastBrightnessOffset = 0;
+    this._lastReferenceRefreshAt = -Infinity;
+    this._lastReferenceRefreshState = 'idle';
   }
 
   setThreshold(value) {
@@ -80,6 +92,7 @@ export class Detector {
     this._hasReference = false;
     if (this._refAccum) this._refAccum.fill(0);
     this._refCount = 0;
+    this._resetCandidateReference();
     // Fresh reference ⇒ the rising-edge gate must be open so the NEXT
     // "clear → dirty" transition (the bike entering the ROI) fires a
     // trigger without first needing a below-threshold reading.
@@ -101,11 +114,45 @@ export class Detector {
   observeStillness(video, stillnessThreshold = 1) {
     if (!this.roi) return 1;
     const gray = this._readRoiGray(video);
+    return this._measureStillness(gray, stillnessThreshold);
+  }
+
+  // Last stillness ratio reported by observeStillness(). For debug overlays.
+  lastStillnessRatio() {
+    return this._prevStillnessRatio;
+  }
+
+  lastMotionRatio() {
+    return this._lastRatio;
+  }
+
+  clearReferenceRefreshStatus() {
+    this._lastReferenceRefreshState = 'idle';
+  }
+
+  // Forget the previous-frame snapshot so the next observeStillness() call
+  // starts fresh. Call this on phase transitions (e.g. when leaving FINISHED
+  // for COOLDOWN) so a stale snapshot from two phases ago does not dominate
+  // the first stillness reading of the new phase.
+  resetStillness() {
+    this._hasPrevGray = false;
+    this._prevStillnessRatio = 1;
+  }
+
+  _resetCandidateReference() {
+    if (this._candidateAccum) this._candidateAccum.fill(0);
+    this._candidateCount = 0;
+    this._candidateStartedAt = 0;
+  }
+
+  _measureStillness(gray, stillnessThreshold = 1) {
     if (!this._hasPrevGray) {
       this._prevGray.set(gray);
       this._hasPrevGray = true;
+      this._prevStillnessRatio = 1;
       return 1;
     }
+
     let moved = 0;
     const movedLimit = Math.floor(gray.length * stillnessThreshold);
     for (let i = 0; i < gray.length; i++) {
@@ -118,24 +165,27 @@ export class Detector {
         }
       }
     }
+
     const ratio = moved / gray.length;
     this._prevGray.set(gray);
     this._prevStillnessRatio = ratio;
     return ratio;
   }
 
-  // Last stillness ratio reported by observeStillness(). For debug overlays.
-  lastStillnessRatio() {
-    return this._prevStillnessRatio;
-  }
+  _motionRatioAgainstReference(gray, stopRatio) {
+    if (!this._hasReference) return 1;
 
-  // Forget the previous-frame snapshot so the next observeStillness() call
-  // starts fresh. Call this on phase transitions (e.g. when leaving FINISHED
-  // for COOLDOWN) so a stale snapshot from two phases ago does not dominate
-  // the first stillness reading of the new phase.
-  resetStillness() {
-    this._hasPrevGray = false;
-    this._prevStillnessRatio = 1;
+    const brightnessOffset = this._grayMean - this._referenceMean;
+    this._lastBrightnessOffset = brightnessOffset;
+    let moved = 0;
+    const movedLimit = Math.ceil(gray.length * stopRatio);
+    for (let i = 0; i < gray.length; i++) {
+      if (Math.abs((gray[i] - this.reference[i]) - brightnessOffset) > this.pixelDiffThreshold) {
+        moved++;
+        if (moved >= movedLimit) break;
+      }
+    }
+    return moved / gray.length;
   }
 
   _readRoiGray(video) {
@@ -158,6 +208,68 @@ export class Detector {
     return gray;
   }
 
+  refreshReferenceSafely(video, metadata, {
+    driftRatioThreshold,
+    maxRatioThreshold,
+    stillnessThreshold,
+    stableDuration,
+    minFrames,
+    minInterval,
+    mode,
+    blendAlpha = 1,
+  }) {
+    if (!this.roi || !this._hasReference) return false;
+    if (metadata.mediaTime - this._lastReferenceRefreshAt < minInterval) {
+      const remaining = minInterval - (metadata.mediaTime - this._lastReferenceRefreshAt);
+      this._lastReferenceRefreshState = `wait:${remaining.toFixed(1)}s`;
+      this._resetCandidateReference();
+      return false;
+    }
+
+    const gray = this._readRoiGray(video);
+    const activeRatio = this._motionRatioAgainstReference(gray, maxRatioThreshold);
+    const stillnessRatio = this._measureStillness(gray, stillnessThreshold);
+    if (activeRatio < driftRatioThreshold) {
+      this._lastReferenceRefreshState = 'idle';
+      this._resetCandidateReference();
+      return false;
+    }
+    if (activeRatio >= maxRatioThreshold) {
+      this._lastReferenceRefreshState = 'blocked:high';
+      this._resetCandidateReference();
+      return false;
+    }
+    if (stillnessRatio >= stillnessThreshold) {
+      this._lastReferenceRefreshState = 'blocked:motion';
+      this._resetCandidateReference();
+      return false;
+    }
+
+    if (!this._candidateCount) this._candidateStartedAt = metadata.mediaTime;
+    for (let i = 0; i < gray.length; i++) this._candidateAccum[i] += gray[i];
+    this._candidateCount++;
+    this._lastReferenceRefreshState = `capture:${this._candidateCount}/${minFrames}`;
+
+    const candidateAge = metadata.mediaTime - this._candidateStartedAt;
+    if (this._candidateCount < minFrames || candidateAge < stableDuration) return false;
+
+    const alpha = mode === 'blend' ? Math.max(0, Math.min(1, blendAlpha)) : 1;
+    let refSum = 0;
+    for (let i = 0; i < gray.length; i++) {
+      const candidate = this._candidateAccum[i] / this._candidateCount;
+      const ref = mode === 'blend'
+        ? this.reference[i] + (candidate - this.reference[i]) * alpha
+        : candidate;
+      this.reference[i] = ref;
+      refSum += ref;
+    }
+    this._referenceMean = refSum / gray.length;
+    this._lastReferenceRefreshAt = metadata.mediaTime;
+    this._lastReferenceRefreshState = mode === 'blend' ? 'blend' : 'replace';
+    this._resetCandidateReference();
+    return true;
+  }
+
   process(video, metadata) {
     if (!this.roi) return false;
 
@@ -176,6 +288,7 @@ export class Detector {
         }
         this._referenceMean = refSum / gray.length;
         this._hasReference = true;
+        this._lastReferenceRefreshAt = metadata.mediaTime;
         // Reference just became valid — open the rising-edge gate so the
         // first armed trigger is free (no need for the subject to first
         // cross the ROI clear, which would be impossible before the first
@@ -185,21 +298,10 @@ export class Detector {
       return false;
     }
 
-    // Count motion pixels.
-    let moved = 0;
-    const movedNeeded = Math.ceil(gray.length * this.threshold);
     // Phone cameras keep adjusting exposure/white balance after arming. A
     // uniform luma shift across the ROI is not motion, so remove the current
     // frame's mean brightness drift before comparing per-pixel differences.
-    const brightnessOffset = this._grayMean - this._referenceMean;
-    this._lastBrightnessOffset = brightnessOffset;
-    for (let i = 0; i < gray.length; i++) {
-      if (Math.abs((gray[i] - this.reference[i]) - brightnessOffset) > this.pixelDiffThreshold) {
-        moved++;
-        if (moved >= movedNeeded) break;
-      }
-    }
-    const ratio = moved / gray.length;
+    const ratio = this._motionRatioAgainstReference(gray, this.threshold);
     this._lastRatio = ratio;
 
     // ROI is currently clear — open the gate for the NEXT threshold crossing.
@@ -238,6 +340,6 @@ export class Detector {
 
   debugLine() {
     const gate = this._clearSinceTrigger ? 'open' : 'shut';
-    return `ratio=${this._lastRatio.toFixed(3)} still=${this._prevStillnessRatio.toFixed(3)} drift=${this._lastBrightnessOffset.toFixed(1)} thr=${this.threshold.toFixed(2)} ref=${this._hasReference ? 'ok' : 'building'} gate=${gate}`;
+    return `ratio=${this._lastRatio.toFixed(3)} still=${this._prevStillnessRatio.toFixed(3)} drift=${this._lastBrightnessOffset.toFixed(1)} thr=${this.threshold.toFixed(2)} ref=${this._hasReference ? 'ok' : 'building'} refresh=${this._lastReferenceRefreshState} gate=${gate}`;
   }
 }

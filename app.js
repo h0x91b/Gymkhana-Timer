@@ -84,6 +84,14 @@ const TAP_REVEAL_MS = 5000;              // controls stay visible this long afte
 const NOT_READY_VOICE_INTERVAL = 15.0;   // seconds; spoken while the session is active but not yet ARMED
 const ROI_PREVIEW_FPS = 8;               // thumbnail is a framing aid, not a precision signal
 const DEBUG_RENDER_INTERVAL = 0.25;       // seconds; avoid per-frame string churn
+const REFERENCE_REFRESH_DRIFT_RATIO = 0.10;      // refresh only when active ratio shows real reference drift
+const REFERENCE_REFRESH_MAX_RATIO = 0.80;        // fraction of trigger threshold; above this is too close to crossing
+const REFERENCE_REFRESH_STILLNESS = 0.03;        // stricter than OBSERVING stability; refresh must be boring
+const REFERENCE_REFRESH_DURATION = 1.5;          // seconds of clean frames before applying a candidate
+const REFERENCE_REFRESH_MIN_FRAMES = 8;          // protects very low-FPS streams from one-frame refreshes
+const REFERENCE_REFRESH_INTERVAL = 5.0;          // seconds between successful candidate promotions
+const RUNNING_REFERENCE_REFRESH_GUARD = 8.0;     // never adapt while the bike may still be clearing the line
+const RUNNING_REFERENCE_REFRESH_BLEND = 0.06;    // slow drift correction; finish detection stays dominant
 
 const els = {
   video: document.getElementById('cam'),
@@ -572,6 +580,7 @@ function enterObserving(mediaTime) {
 }
 
 function enterArmed() {
+  detector.resetStillness();
   setState(STATE.ARMED);
   timer.speak(t('voice.readyToGo'));
 }
@@ -579,6 +588,7 @@ function enterArmed() {
 function enterRunning(mediaTime) {
   t0 = mediaTime;
   startedAt = Date.now();
+  detector.resetStillness();
   timer.start(t0);
   timer.speak(t('voice.start'));
   setState(STATE.RUNNING);
@@ -684,6 +694,29 @@ function onFrame(frame, metadata) {
   }
 }
 
+function refreshReferenceIfSafe(frame, metadata, mode) {
+  const isRunning = mode === 'running';
+  if (detector.lastMotionRatio() < REFERENCE_REFRESH_DRIFT_RATIO) {
+    detector.clearReferenceRefreshStatus();
+    return;
+  }
+
+  const maxRatioThreshold = Math.max(
+    REFERENCE_REFRESH_DRIFT_RATIO + 0.02,
+    detector.threshold * REFERENCE_REFRESH_MAX_RATIO,
+  );
+  detector.refreshReferenceSafely(frame, metadata, {
+    driftRatioThreshold: REFERENCE_REFRESH_DRIFT_RATIO,
+    maxRatioThreshold,
+    stillnessThreshold: REFERENCE_REFRESH_STILLNESS,
+    stableDuration: REFERENCE_REFRESH_DURATION,
+    minFrames: REFERENCE_REFRESH_MIN_FRAMES,
+    minInterval: REFERENCE_REFRESH_INTERVAL,
+    mode: isRunning ? 'blend' : 'replace',
+    blendAlpha: isRunning ? RUNNING_REFERENCE_REFRESH_BLEND : 1,
+  });
+}
+
 // One frame's worth of hands-free-loop work. Split out of onFrame() so the
 // camera/FPS/HUD plumbing stays readable and so this function can focus on
 // the actual state transitions.
@@ -738,6 +771,8 @@ function stepSession(frame, metadata) {
     case STATE.ARMED: {
       if (detector.process(frame, metadata)) {
         enterRunning(mt);
+      } else {
+        refreshReferenceIfSafe(frame, metadata, 'armed');
       }
       break;
     }
@@ -745,6 +780,8 @@ function stepSession(frame, metadata) {
     case STATE.RUNNING: {
       if (detector.process(frame, metadata)) {
         enterFinished(mt - t0, mt);
+      } else if (mt - t0 >= RUNNING_REFERENCE_REFRESH_GUARD) {
+        refreshReferenceIfSafe(frame, metadata, 'running');
       }
       break;
     }

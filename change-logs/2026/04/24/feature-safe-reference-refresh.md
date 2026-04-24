@@ -1,0 +1,1 @@
+Reference frames now refresh safely during long waits and long runs with a 0.35 default trigger threshold. Armed waits use a stable drift candidate once active motion ratio rises past 0.10, running sessions use delayed slow blending, debug output shows the refresh state, and the ROI preview sits lower near the controls.

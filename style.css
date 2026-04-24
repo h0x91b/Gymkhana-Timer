@@ -220,13 +220,13 @@ body[data-roi-active="true"] #cam {
    shrinks to a small pill — large enough to verify that the detector is
    still watching the right spot, small enough not to compete with the
    numbers. Anchored bottom-left per AGENTS.md §Session mode (~20vw ×
-   15vh, lower-left) and lifted above the reserved controls zone so it
-   stays visible even during the 5-second tap-to-reveal overlap. The
-   previous top-right position directly overlapped the hero timer in
-   portrait — can't live there. */
+   15vh, lower-left) and tucked close to the lower controls area so it
+   stays readable without competing with the hero timer. The previous
+   top-right position directly overlapped the hero timer in portrait —
+   can't live there. */
 body[data-roi-active="true"] #roi-view {
   inset: auto;
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 96px);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 64px);
   left: 16px;
   width: min(22vw, 180px);
   height: min(15vh, 130px);
