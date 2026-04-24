@@ -6,5 +6,8 @@ dist/
 bun.lock
 bun.lockb
 
+# Local Codex/dev-3.0 hooks
+.codex/
+
 # dev-3.0 local config
 .dev3/config.local.json
