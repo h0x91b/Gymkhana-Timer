@@ -23,6 +23,9 @@ export default {
   'ui.debug': 'Debug',
   'ui.language': 'Language',
   'ui.update': 'Update',
+  'ui.buildLocal': 'dev',
+  'ui.buildUnknown': 'unknown',
+  'ui.buildStampLabel': 'Version {version}. Built {builtAt}. Commit {commit}.',
   // {fps} is the measured frame rate, {ms} the half-frame timing uncertainty.
   'ui.fpsReadout': '{fps} FPS · ±{ms} ms',
   // Secondary timer sub-line messages — all shown small under the big time.

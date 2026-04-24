@@ -81,6 +81,21 @@ jobs:
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
+      - name: Generate build info
+        run: |
+          cache_version="$(sed -n "s/^const CACHE_VERSION = '\([^']*\)';$/\1/p" sw.js)"
+          if [ -z "$cache_version" ]; then
+            echo "::error file=sw.js::CACHE_VERSION not found"
+            exit 1
+          fi
+          cat > build-info.js <<EOF
+          export const BUILD_INFO = Object.freeze({
+            version: '$cache_version',
+            builtAt: '$(date -u +%Y-%m-%dT%H:%M:%SZ)',
+            commit: '${GITHUB_SHA}',
+          });
+          EOF
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:

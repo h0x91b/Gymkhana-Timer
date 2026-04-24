@@ -41,6 +41,7 @@
 
 import { Camera } from './camera.js';
 import { Detector } from './detector.js';
+import { BUILD_INFO } from './build-info.js';
 // RoiPicker (two-tap corner picker) is deliberately unused. Keeping the
 // file around for reference — the two-tap flow was replaced with
 // "zoom-as-ROI": the visible viewport (after pinch/pan) IS the ROI. See
@@ -87,6 +88,7 @@ const DEBUG_RENDER_INTERVAL = 0.25;       // seconds; avoid per-frame string chu
 const els = {
   video: document.getElementById('cam'),
   overlay: document.getElementById('overlay'),
+  buildStamp: document.getElementById('build-stamp'),
   roiView: document.getElementById('roi-view'),
   timer: document.getElementById('timer'),
   timerSubline: document.getElementById('timer-subline'),
@@ -198,6 +200,7 @@ function applyTranslations() {
   for (const el of document.querySelectorAll('[data-i18n-key]')) {
     el.textContent = t(el.dataset.i18nKey);
   }
+  updateBuildStamp();
   // Status element has a dynamic key — re-resolve from its current data-status.
   els.status.textContent = t(statusKey(els.status.dataset.status));
   // The session button is "Start session" vs "Stop session" depending on
@@ -217,6 +220,42 @@ function applyTranslations() {
   // leave a stale string visible for up to one frame.
   updateSubline(lastFrameMediaTime);
   document.documentElement.lang = getLocale();
+}
+
+function formatBuildVersion(version) {
+  const raw = String(version || '').trim();
+  if (!raw) return t('ui.buildLocal');
+  const numeric = raw.match(/(?:^|-)v?(\d+(?:\.\d+)*)$/);
+  return numeric ? `v${numeric[1]}` : raw;
+}
+
+function formatBuildTime(value) {
+  if (!value) return t('ui.buildLocal');
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return t('ui.buildUnknown');
+  const pad = (n) => String(n).padStart(2, '0');
+  return [
+    date.getUTCFullYear(),
+    '-',
+    pad(date.getUTCMonth() + 1),
+    '-',
+    pad(date.getUTCDate()),
+    ' ',
+    pad(date.getUTCHours()),
+    ':',
+    pad(date.getUTCMinutes()),
+    'Z',
+  ].join('');
+}
+
+function updateBuildStamp() {
+  const version = formatBuildVersion(BUILD_INFO.version);
+  const builtAt = formatBuildTime(BUILD_INFO.builtAt);
+  const commit = BUILD_INFO.commit ? String(BUILD_INFO.commit).slice(0, 12) : t('ui.buildLocal');
+  els.buildStamp.textContent = `${version} · ${builtAt}`;
+  const label = t('ui.buildStampLabel', { version, builtAt, commit });
+  els.buildStamp.setAttribute('aria-label', label);
+  els.buildStamp.title = label;
 }
 
 function populateLangSelect() {
