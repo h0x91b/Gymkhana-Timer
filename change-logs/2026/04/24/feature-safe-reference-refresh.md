@@ -1,0 +1,1 @@
+Reference frames now refresh safely during long waits and long runs. Armed waits use a clean candidate frame that replaces the active reference only after a stable window, while running sessions use slow blending after a guard period so finish detection stays live.
