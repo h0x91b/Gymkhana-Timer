@@ -135,7 +135,7 @@ Anything that violates these rules is a regression even if other tests pass.
 
 ## PWA
 
-- Service worker caches all shipped assets. **Bump `CACHE_VERSION` in `sw.js` on every deploy** or users keep stale code forever.
+- Service worker caches all shipped assets. GitHub Pages deploy rewrites `CACHE_VERSION` in `sw.js` automatically from CI metadata before uploading the artifact, so release cache invalidation does not require a manual source edit.
 - Wake Lock is requested on camera start so the screen doesn't sleep mid-run.
 - Icons must be real PNGs before installs work on strict Android builds; placeholders are acceptable during development.
 - Must be served over HTTPS (or `localhost`) for `getUserMedia` and service worker to function.
@@ -377,7 +377,7 @@ Single workflow at [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) with
 
 Because `deploy` depends on `verify`, a broken commit can never reach production — verify fails, deploy never runs. If branch protection is enabled later, add `verify` to the required status checks.
 
-- **Always bump `CACHE_VERSION` in `sw.js` before pushing a release** — otherwise installed clients keep serving the previous bundle from their service worker cache. The client-driven update flow ([`decisions/003-client-driven-sw-update.md`](./decisions/003-client-driven-sw-update.md)) needs a version change to detect anything.
+- Deploy rewrites `CACHE_VERSION` in `sw.js` and `build-info.js` automatically before uploading the GitHub Pages artifact. The client-driven update flow ([`decisions/003-client-driven-sw-update.md`](./decisions/003-client-driven-sw-update.md)) still needs a version change, but CI now guarantees one per deploy.
 - Repo setup done programmatically via `gh api -X POST /repos/.../pages -f build_type=workflow`; `Settings → Pages` now shows "Source: GitHub Actions" and `Enforce HTTPS` is on.
 - Any other static host (Cloudflare Pages, Netlify) would work too — the app uses only relative asset paths — but there's no reason to move off Pages.
 - Rationale and alternatives: [`decisions/004-github-pages-deploy.md`](./decisions/004-github-pages-deploy.md).

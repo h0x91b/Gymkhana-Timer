@@ -23,4 +23,4 @@ Camera and service worker require HTTPS off `localhost`. The dev server spawns a
 
 ## CI / Production deploy
 
-Every push and PR is verified by [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) — `bun build` smoke-tests `app.js` and `sw.js` and every JSON file is validated. Pushes to `master` that pass verification are auto-deployed to GitHub Pages (`https://h0x91b.github.io/Gymkhana-Timer/`). Bump `CACHE_VERSION` in [`sw.js`](./sw.js) before each release — without it, installed PWAs keep serving the previous bundle from the service-worker cache.
+Every push and PR is verified by [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) — `bun build` smoke-tests `app.js` and `sw.js` and every JSON file is validated. Pushes to `master` that pass verification are auto-deployed to GitHub Pages (`https://h0x91b.github.io/Gymkhana-Timer/`). During deploy, CI rewrites the PWA cache version and build stamp from GitHub Actions metadata, so installed PWAs get a fresh service-worker version without a manual source bump.

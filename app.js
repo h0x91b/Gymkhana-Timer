@@ -1028,9 +1028,9 @@ document.body.dataset.debug = String(els.debugToggle.checked);
 // Dev-mode note: the dev server's live-reload shim unregisters the SW and
 // nukes caches on every file change (scripts/dev-server.ts), so this update
 // flow does not fire under the default `bun run start`. To exercise it end
-// to end, start with DEV_RELOAD=0 bun run start, bump CACHE_VERSION in
-// sw.js, hit refresh once to install the new worker, and watch for either
-// the silent reload or the Update button depending on state.
+// to end, start with DEV_RELOAD=0 bun run start, temporarily change
+// CACHE_VERSION in sw.js, hit refresh once to install the new worker, and
+// watch for either the silent reload or the Update button depending on state.
 // ---------------------------------------------------------------------------
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
