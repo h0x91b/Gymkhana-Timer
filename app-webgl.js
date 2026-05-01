@@ -478,30 +478,38 @@ function renderDebug() {
  * canvas-specific bits removed (no #roi-view thumbnail in v1).      *
  * ------------------------------------------------------------------ */
 
-// Convert a CSS-pixel ROI on the viewport into video-pixel coords. The
-// viewport's child <canvas#display> uses 100%×100% to fill, so the same
-// math that worked for object-fit:cover on canvas-app's <video> applies
-// here: scale = max(W/Vw, H/Vh), then clamp.
+// Convert a CSS-pixel ROI on the viewport into video-pixel coords.
+//
+// IMPORTANT — this differs from the canvas-app version. The canvas
+// variant copied here renders video via a <video> element with
+// object-fit:cover, so the cover scale = max(W/Vw, H/Vh) was correct.
+// In webgl-app the camera is drawn through FS_DISPLAY with a fullscreen
+// quad and 0..1 UVs across the canvas — i.e. the video gets stretched
+// to fill the canvas (per-axis independent scaling, no centre-crop).
+// The mapping from canvas-CSS-pixels to video-pixels is therefore a
+// straight per-axis ratio (sx = Vw/W, sy = Vh/H).
+//
+// Symptom of using the wrong math: motion appears to be detected
+// outside the visible red ROI box. The red border is drawn from the
+// stored video-space ROI back to canvas via fullscreen-fill (i.e.
+// linear), so any cover-shrunken ROI ends up positioned at a narrower
+// region of the canvas than where the rider placed the reticle. The
+// detector then watches a video region that doesn't correspond to the
+// reticle's actual area on screen, so motion the rider thinks is
+// "outside the ROI" is in fact inside the (shrunken/shifted) video
+// region the cover math produced.
 function mapCssRoiToVideoRoi(cssRoi, video, W, H) {
   const Vw = video.videoWidth;
   const Vh = video.videoHeight;
   if (!Vw || !Vh) return cssRoi;
 
-  const s = Math.max(W / Vw, H / Vh);
-  const scaledW = Vw * s;
-  const scaledH = Vh * s;
-  const offsetX = (W - scaledW) / 2;
-  const offsetY = (H - scaledH) / 2;
+  const sx = Vw / W;
+  const sy = Vh / H;
 
-  const rawX = (cssRoi.x - offsetX) / s;
-  const rawY = (cssRoi.y - offsetY) / s;
-  const rawW = cssRoi.w / s;
-  const rawH = cssRoi.h / s;
-
-  const x = Math.max(0, Math.min(Vw, rawX));
-  const y = Math.max(0, Math.min(Vh, rawY));
-  const w = Math.max(1, Math.min(Vw - x, rawW));
-  const h = Math.max(1, Math.min(Vh - y, rawH));
+  const x = Math.max(0, Math.min(Vw, cssRoi.x * sx));
+  const y = Math.max(0, Math.min(Vh, cssRoi.y * sy));
+  const w = Math.max(1, Math.min(Vw - x, cssRoi.w * sx));
+  const h = Math.max(1, Math.min(Vh - y, cssRoi.h * sy));
   return { x, y, w, h };
 }
 
