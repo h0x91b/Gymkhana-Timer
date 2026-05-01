@@ -1,45 +1,60 @@
 // WebGL2 background-subtraction detector.
 //
 // Public API mirrors the canvas-based Detector in detector.js so app.js
-// can swap between them without changes. The internals are different:
-// the camera frame is uploaded to a GPU texture, motion ratio (vs the
-// reference) and stillness ratio (vs the previous frame) are computed
-// by fragment shaders, reduced via generateMipmap to a 1×1 pixel, and
-// read back via gl.readPixels(1, 1) — so each frame returns a SINGLE
-// number to the CPU instead of dragging the whole ROI through
-// getImageData. webgl-bench.html proves this path holds 60 FPS where
-// the canvas path saturates at ~45.
+// can swap between them without changes. The implementation is GPU-only
+// from the camera all the way down to a single readPixels(1×1) per
+// video frame.
 //
-// Pipeline per call (process / observeStillness / refreshReferenceSafely):
-//   1. texImage2D(_texCur, video)         — upload current camera frame.
-//   2. crop pass: _texCur (ROI sub-rect) → _texCurCropped (FBO_SIZE²).
-//      After this everything below samples at fullscreen 0..1 UV.
-//   3. diff pass: _texCurCropped vs (_texRef|_texPrev) → _texMotion.
-//   4. generateMipmap(_texMotion) reduces FBO_SIZE → 1×1.
-//   5. readPixels(0, 0, 1, 1) returns the motion ratio (R channel).
+// Pipeline per video frame:
+//   1. texImage2D(_texCur, video)
+//        Upload the current camera frame. Cached against
+//        video.currentTime so app.js can call us multiple times per
+//        frame without re-uploading.
+//   2. ROI crop pass (FS_COPY)
+//        Pull the ROI sub-rect out of _texCur into _texCurCropped, a
+//        FBO_SIZE × FBO_SIZE FBO. After this every subsequent pass
+//        samples at fullscreen 0..1 UV.
+//   3. Metrics pass (FS_METRICS)
+//        Single fragment shader that emits THREE channels at once:
+//          R = motion mask        — step(uThreshold, |Δluma - drift|)
+//          G = signed Δluma drift — (luma_cur - luma_ref)*0.5 + 0.5
+//          B = current luma       — for autoscale / debug
+//        The same shader handles brightness-offset compensation by
+//        subtracting the last frame's signed drift before thresholding,
+//        so a uniform exposure shift across the ROI is not counted as
+//        motion.
+//   4. generateMipmap(_texMotion)
+//        Box-averages 256² → 1×1. Final pixel: R = fraction above
+//        threshold (motion ratio), G = mean signed drift mapped to
+//        0..1, B = mean current luma.
+//   5. readPixels(0, 0, 1, 1)
+//        Four bytes back to the CPU. ONE GPU sync stall per frame,
+//        regardless of whether the caller wanted motion ratio,
+//        stillness, or refresh-eligibility — they're all derived from
+//        the same single read. This is the entire reason the WebGL
+//        path holds 60 FPS where the canvas path saturates at ~45.
 //
-// Simplifications vs the canvas detector (acceptable for v1):
-//   - Reference is a single uploaded frame (no 5-frame averaging). The
-//     GPU's mipmap reduction over 256² fragments already smooths sensor
-//     noise enough; if averaging turns out to matter we can add a
-//     dedicated accumulation FBO later.
-//   - Brightness offset compensation (mean-luma drift normalisation)
-//     is omitted in v1. If outdoor exposure drift causes false
-//     triggers, add a uniform on FS_DIFF computed from a 1×1 mipmap of
-//     luma.
-//   - refreshReferenceSafely treats every successful refresh as a
-//     'replace' or 'blend' — no minFrames accumulation across frames.
+// Stillness vs prev frame is GONE.
+//   The canvas detector measured "stillness" as a frame-to-frame diff
+//   (cur vs the previous video frame) so OBSERVING could decide when
+//   the ROI was empty enough to capture a fresh reference. After
+//   debugging a stable 0.45 stillness reading on Samsung/Xiaomi
+//   despite a perfectly still scene, the model was reworked: when a
+//   reference exists, "still" simply means "the current frame is
+//   close to the reference" (motion ratio low), and that single number
+//   already tells us whether the ROI is empty. When NO reference
+//   exists yet (very first OBSERVING), observeStillness returns 0 so
+//   app.js's STABILITY_DURATION timer fires after the usual 2s and
+//   captures the first reference.
 
 const COOLDOWN_SECONDS = 3;
-const FBO_SIZE = 256;                            // power-of-two for mipmap reduction
-const FBO_MIP_LEVEL = Math.log2(FBO_SIZE) | 0;   // 8 → 1×1 pixel level
+const FBO_SIZE = 256;
+const FBO_MIP_LEVEL = Math.log2(FBO_SIZE) | 0;
 
-// Explicit attribute locations — without these the GLSL compiler is
-// free to assign aPos and aUv in either order, in which case UV would
-// receive the position bytes and we'd sample garbage at clip-space
-// coordinates (which manifests as a stable ~50% diff in stillness even
-// in a perfectly still scene). The previous version of this file did
-// not pin locations and exhibited exactly that bug.
+// Explicit attribute locations. Without these the GLSL compiler is
+// free to assign aPos and aUv in either order, which previously caused
+// UV to receive position data ([-1..1]) and produced garbage sampling
+// (a stable ~50% diff in a static scene).
 const VS = `#version 300 es
 layout(location=0) in vec2 aPos;
 layout(location=1) in vec2 aUv;
@@ -49,26 +64,39 @@ void main() {
   vUv = aUv;
 }`;
 
-// Diff: emits 1.0 where |luma(a) - luma(b)| > threshold else 0.0.
-// Mipmap reduction averages → final 1×1 pixel = motion ratio.
-const FS_DIFF = `#version 300 es
+// Combined metrics pass. Three independent measurements packed into
+// the RGB channels of a single fragment output, so generateMipmap +
+// one readPixels(1×1) returns all three at once.
+//
+//   R: motion mask, gated by threshold AFTER brightness-drift
+//      compensation. Mipmap-averaged → motion ratio in [0..1].
+//   G: signed Δluma per pixel, biased into [0..1] by *0.5 + 0.5 so
+//      the mipmap average is interpretable. Decode on CPU as
+//      (G_avg/255 - 0.5) * 2 → signed drift in [-1..1].
+//   B: absolute current luma per pixel. Mipmap-averaged →
+//      mean luma of the cropped ROI. Useful for autoscale and for
+//      diagnostics; not used by the state machine in v1.
+const FS_METRICS = `#version 300 es
 precision highp float;
-uniform sampler2D uA;
-uniform sampler2D uB;
+uniform sampler2D uA;             // current cropped
+uniform sampler2D uB;             // reference
 uniform float uThreshold;
+uniform float uBrightnessOffset;  // signed drift from previous frame, [-1..1]
 in vec2 vUv;
 out vec4 outColor;
 const vec3 LUMA = vec3(0.299, 0.587, 0.114);
 void main() {
   float la = dot(texture(uA, vUv).rgb, LUMA);
   float lb = dot(texture(uB, vUv).rgb, LUMA);
-  float moved = step(uThreshold, abs(la - lb));
-  outColor = vec4(moved, moved, moved, 1.0);
+  float signedDiff = la - lb;
+  float compensated = signedDiff - uBrightnessOffset;
+  float moved = step(uThreshold, abs(compensated));
+  outColor = vec4(moved, signedDiff * 0.5 + 0.5, la, 1.0);
 }`;
 
-// Passthrough: writes texture A to the bound FBO. Used to crop the ROI
-// sub-rect of the camera frame into a fullscreen FBO, and to seed the
-// reference / previous-frame textures.
+// Passthrough: writes texture A through to the bound FBO. Used to
+// crop the ROI sub-rect of the camera frame into a fullscreen FBO,
+// and to seed the reference texture.
 const FS_COPY = `#version 300 es
 precision highp float;
 uniform sampler2D uA;
@@ -77,11 +105,11 @@ out vec4 outColor;
 void main() { outColor = texture(uA, vUv); }`;
 
 // Blend: outputs mix(B, A, alpha). Used by refreshReferenceSafely's
-// 'blend' mode for slow exposure-drift correction.
+// 'blend' mode for slow exposure-drift correction of the reference.
 const FS_BLEND = `#version 300 es
 precision highp float;
-uniform sampler2D uA;       // current cropped frame
-uniform sampler2D uB;       // existing reference
+uniform sampler2D uA;
+uniform sampler2D uB;
 uniform float uAlpha;
 in vec2 vUv;
 out vec4 outColor;
@@ -91,33 +119,35 @@ export class Detector {
   constructor() {
     this.roi = null;
     this.threshold = 0.35;
-    this.pixelDiffThreshold = 28 / 255; // canvas detector used 28/255 in luma
     this.cooldownSeconds = COOLDOWN_SECONDS;
 
     this._hasReference = false;
     this._captureRequested = false;
-    this._hasPrevFrame = false;
 
     this._lastTriggerAt = -Infinity;
-    this._lastRatio = 0;
-    this._prevStillnessRatio = 1;
     this._clearSinceTrigger = true;
+
+    // Last metrics produced by _computeMetrics. Single source of truth
+    // for both motion ratio (lastMotionRatio) and stillness
+    // (lastStillnessRatio) — they read the same field.
+    this._lastRatio = 0;
+    this._prevStillnessRatio = 1;     // mirror of _lastRatio after observeStillness
+    this._lastBrightnessOffset = 0;   // signed drift from previous frame
+    this._lastAvgLuma = 0;            // mean luma in the ROI
 
     this._lastReferenceRefreshAt = -Infinity;
     this._lastReferenceRefreshState = 'idle';
-    this._lastBrightnessOffset = 0;
 
     this._uploadW = 0;
     this._uploadH = 0;
 
-    // Per-frame caching. app.js calls process() and refreshReferenceSafely()
-    // back-to-back on the same video frame in some states; without these
-    // we'd re-upload + re-crop + re-readPixels twice. Keyed by
-    // video.currentTime, which the spec advances on every video frame.
+    // Per-frame caches keyed by video.currentTime — app.js may call
+    // process() and refreshReferenceSafely() back-to-back on the same
+    // frame, and we'd rather skip the second upload + crop + diff +
+    // readPixels than do them twice.
     this._lastUploadAt = -1;
     this._lastCropAt = -1;
-    this._motionRatioAt = -1;
-    this._stillnessRatioAt = -1;
+    this._lastMetricsAt = -1;
 
     this._initGl();
   }
@@ -128,10 +158,10 @@ export class Detector {
     this.roi = roi;
     this._hasReference = false;
     this._captureRequested = false;
-    this._hasPrevFrame = false;
     this._lastReferenceRefreshAt = -Infinity;
     this._lastReferenceRefreshState = 'idle';
     this._clearSinceTrigger = true;
+    this._lastBrightnessOffset = 0;
   }
 
   setThreshold(value) {
@@ -139,39 +169,32 @@ export class Detector {
   }
 
   captureReference() {
-    // Defer the actual GPU copy until process() runs with a fresh
-    // camera frame. Same contract as the canvas detector ("next process
-    // calls build the reference"), collapsed to N=1 here.
     this._hasReference = false;
     this._captureRequested = true;
     this._clearSinceTrigger = true;
+    this._lastBrightnessOffset = 0;
   }
 
   hasReference() {
     return this._hasReference;
   }
 
+  // OBSERVING uses this to decide when the ROI is "calm enough" to
+  // capture a fresh reference. The new model: if a reference exists,
+  // "calmness" is just motion ratio (cur vs ref). Before any
+  // reference exists (very first OBSERVING in a session), return 0
+  // so app.js's STABILITY_DURATION timer fires after 2s and we
+  // capture the first one.
   observeStillness(video /* , stillnessThreshold = 1 */) {
     if (!this.roi) return 1;
-    if (!video || !video.videoWidth) return 1;
-
-    this._uploadCurrent(video);
-    this._cropCurrent();
-    let ratio;
-    if (!this._hasPrevFrame) {
-      // First observation — no comparison possible. Match canvas
-      // detector's "always returns 1 on the first call" semantics.
-      ratio = 1;
-    } else if (this._stillnessRatioAt === this._lastUploadAt) {
-      ratio = this._prevStillnessRatio;
-    } else {
-      ratio = this._diffCroppedAgainst(this._texPrev, this.pixelDiffThreshold);
-      this._stillnessRatioAt = this._lastUploadAt;
+    if (!this._hasReference) {
+      this._prevStillnessRatio = 0;
+      return 0;
     }
-    this._copyCroppedTo(this._fboPrev);
-    this._hasPrevFrame = true;
-    this._prevStillnessRatio = ratio;
-    return ratio;
+    if (!video || !video.videoWidth) return 1;
+    const m = this._computeMetrics(video);
+    this._prevStillnessRatio = m.motion;
+    return m.motion;
   }
 
   lastStillnessRatio() {
@@ -186,16 +209,15 @@ export class Detector {
     this._lastReferenceRefreshState = 'idle';
   }
 
-  resetStillness() {
-    this._hasPrevFrame = false;
-    this._prevStillnessRatio = 1;
-  }
+  // No-op kept for API compatibility with detector.js. The frame-to-
+  // frame stillness model is gone; nothing to reset.
+  resetStillness() {}
 
   refreshReferenceSafely(video, metadata, {
     driftRatioThreshold,
     maxRatioThreshold,
-    stillnessThreshold,
-    /* stableDuration, minFrames — not used in this single-frame impl */
+    /* stillnessThreshold — no longer needed, motion ratio is the same signal */
+    /* stableDuration, minFrames — single-frame replace/blend in this impl */
     minInterval,
     mode,
     blendAlpha = 1,
@@ -208,45 +230,13 @@ export class Detector {
       return false;
     }
 
-    this._uploadCurrent(video);
-    this._cropCurrent();
-
-    let motion;
-    if (this._motionRatioAt === this._lastUploadAt) {
-      motion = this._lastRatio;
-    } else {
-      motion = this._diffCroppedAgainst(this._texRef, this.threshold);
-      this._lastRatio = motion;
-      this._motionRatioAt = this._lastUploadAt;
-    }
-
-    let stillness;
-    if (!this._hasPrevFrame) {
-      stillness = 1;
-    } else if (this._stillnessRatioAt === this._lastUploadAt) {
-      stillness = this._prevStillnessRatio;
-    } else {
-      stillness = this._diffCroppedAgainst(this._texPrev, this.pixelDiffThreshold);
-      this._prevStillnessRatio = stillness;
-      this._stillnessRatioAt = this._lastUploadAt;
-    }
-
-    if (motion < driftRatioThreshold) {
+    const m = this._computeMetrics(video);
+    if (m.motion < driftRatioThreshold) {
       this._lastReferenceRefreshState = 'idle';
-      this._copyCroppedTo(this._fboPrev);
-      this._hasPrevFrame = true;
       return false;
     }
-    if (motion >= maxRatioThreshold) {
+    if (m.motion >= maxRatioThreshold) {
       this._lastReferenceRefreshState = 'blocked:high';
-      this._copyCroppedTo(this._fboPrev);
-      this._hasPrevFrame = true;
-      return false;
-    }
-    if (stillness >= stillnessThreshold) {
-      this._lastReferenceRefreshState = 'blocked:motion';
-      this._copyCroppedTo(this._fboPrev);
-      this._hasPrevFrame = true;
       return false;
     }
 
@@ -258,9 +248,10 @@ export class Detector {
       this._copyCroppedTo(this._fboRef);
       this._lastReferenceRefreshState = 'replace';
     }
-    this._copyCroppedTo(this._fboPrev);
-    this._hasPrevFrame = true;
     this._lastReferenceRefreshAt = metadata.mediaTime;
+    // After updating the reference, the brightness offset accumulated
+    // against the OLD reference is no longer meaningful — reset.
+    this._lastBrightnessOffset = 0;
     return true;
   }
 
@@ -268,30 +259,22 @@ export class Detector {
     if (!this.roi) return false;
     if (!video || !video.videoWidth) return false;
 
-    this._uploadCurrent(video);
-    this._cropCurrent();
-
     if (this._captureRequested) {
+      this._uploadCurrent(video);
+      this._cropCurrent();
       this._copyCroppedTo(this._fboRef);
-      this._copyCroppedTo(this._fboPrev);
       this._hasReference = true;
-      this._hasPrevFrame = true;
       this._captureRequested = false;
       this._lastReferenceRefreshAt = metadata.mediaTime;
       this._clearSinceTrigger = true;
+      this._lastBrightnessOffset = 0;
       return false;
     }
 
     if (!this._hasReference) return false;
 
-    let ratio;
-    if (this._motionRatioAt === this._lastUploadAt) {
-      ratio = this._lastRatio;
-    } else {
-      ratio = this._diffCroppedAgainst(this._texRef, this.threshold);
-      this._lastRatio = ratio;
-      this._motionRatioAt = this._lastUploadAt;
-    }
+    const m = this._computeMetrics(video);
+    const ratio = m.motion;
 
     if (ratio < this.threshold) {
       this._clearSinceTrigger = true;
@@ -311,7 +294,16 @@ export class Detector {
 
   debugLine() {
     const gate = this._clearSinceTrigger ? 'open' : 'shut';
-    return `gpu ratio=${this._lastRatio.toFixed(3)} still=${this._prevStillnessRatio.toFixed(3)} thr=${this.threshold.toFixed(2)} ref=${this._hasReference ? 'ok' : 'building'} refresh=${this._lastReferenceRefreshState} gate=${gate}`;
+    return (
+      `gpu ratio=${this._lastRatio.toFixed(3)} ` +
+      `still=${this._prevStillnessRatio.toFixed(3)} ` +
+      `drift=${this._lastBrightnessOffset.toFixed(3)} ` +
+      `luma=${this._lastAvgLuma.toFixed(2)} ` +
+      `thr=${this.threshold.toFixed(2)} ` +
+      `ref=${this._hasReference ? 'ok' : 'building'} ` +
+      `refresh=${this._lastReferenceRefreshState} ` +
+      `gate=${gate}`
+    );
   }
 
   // ===== WebGL plumbing ====================================================
@@ -333,12 +325,12 @@ export class Detector {
     }
     this.gl = gl;
 
-    // Programs.
-    this._progDiff = this._link(VS, FS_DIFF);
-    this._locDiff = {
-      a:    gl.getUniformLocation(this._progDiff, 'uA'),
-      b:    gl.getUniformLocation(this._progDiff, 'uB'),
-      thr:  gl.getUniformLocation(this._progDiff, 'uThreshold'),
+    this._progMetrics = this._link(VS, FS_METRICS);
+    this._locMetrics = {
+      a:    gl.getUniformLocation(this._progMetrics, 'uA'),
+      b:    gl.getUniformLocation(this._progMetrics, 'uB'),
+      thr:  gl.getUniformLocation(this._progMetrics, 'uThreshold'),
+      off:  gl.getUniformLocation(this._progMetrics, 'uBrightnessOffset'),
     };
     this._progCopy = this._link(VS, FS_COPY);
     this._locCopy = {
@@ -351,9 +343,9 @@ export class Detector {
       alpha: gl.getUniformLocation(this._progBlend, 'uAlpha'),
     };
 
-    // Single VBO + VAO. UVs are filled per-draw so the same quad serves
-    // both ROI-cropping (UV maps to ROI in video coords) and fullscreen
-    // FBO-to-FBO passes (UV = 0..1).
+    // Single VBO + VAO. UVs filled per-draw so the same quad serves
+    // both ROI cropping (UV maps the ROI in video coords) and
+    // fullscreen FBO-to-FBO passes (UV = 0..1).
     this._vbo = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, this._vbo);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(16), gl.DYNAMIC_DRAW);
@@ -367,17 +359,14 @@ export class Detector {
     gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 16, 8);
     gl.bindVertexArray(null);
 
-    // Textures + FBOs.
-    this._texCur = this._makeVideoTex();          // raw camera upload
-    this._texCurCropped = this._makeFboTex(false); // ROI cropped fullscreen
-    this._texRef = this._makeFboTex(false);        // reference frame
-    this._texPrev = this._makeFboTex(false);       // prev frame for stillness
-    this._texMotion = this._makeFboTex(true);      // diff result, mipmapped
-    this._texScratch = this._makeFboTex(false);    // tmp for blend pass
+    this._texCur = this._makeVideoTex();
+    this._texCurCropped = this._makeFboTex(false);
+    this._texRef = this._makeFboTex(false);
+    this._texMotion = this._makeFboTex(true);   // mipmapped: holds metrics output, reduced
+    this._texScratch = this._makeFboTex(false); // tmp buffer for blend (sample+write would alias texRef)
 
     this._fboCurCropped = this._makeFbo(this._texCurCropped, 0);
     this._fboRef = this._makeFbo(this._texRef, 0);
-    this._fboPrev = this._makeFbo(this._texPrev, 0);
     this._fboMotion = this._makeFbo(this._texMotion, 0);
     this._fboReadback = this._makeFbo(this._texMotion, FBO_MIP_LEVEL);
     this._fboScratch = this._makeFbo(this._texScratch, 0);
@@ -409,8 +398,8 @@ export class Detector {
   _makeVideoTex() {
     // NEAREST so the ROI crop pass doesn't blend across pixel
     // boundaries — LINEAR + sub-pixel UVs would inject phantom
-    // differences between consecutive frames and inflate stillness
-    // ratios for a static scene.
+    // differences between consecutive frames and inflate ratios for a
+    // static scene.
     const gl = this.gl;
     const t = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, t);
@@ -426,10 +415,6 @@ export class Detector {
     const t = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, t);
     gl.texStorage2D(gl.TEXTURE_2D, mip ? FBO_MIP_LEVEL + 1 : 1, gl.RGBA8, FBO_SIZE, FBO_SIZE);
-    // FBO-shaped textures are sampled at fullscreen 0..1 UVs — exactly
-    // pixel-aligned — so NEAREST is both correct and cheaper. The
-    // mipmapped motion texture keeps LINEAR_MIPMAP_NEAREST for the
-    // generateMipmap reduction averaging.
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, mip ? gl.LINEAR_MIPMAP_NEAREST : gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -449,8 +434,6 @@ export class Detector {
     return fbo;
   }
 
-  // Writes a quad with the given UV box into the VBO. Triangle-strip
-  // order: bottom-left, bottom-right, top-left, top-right.
   _quad(uvL, uvT, uvR, uvB) {
     const gl = this.gl;
     const data = new Float32Array([
@@ -464,8 +447,6 @@ export class Detector {
   }
 
   _uploadCurrent(video) {
-    // Skip if this exact video frame was already uploaded — app.js can
-    // call us multiple times per frame (process + refreshReferenceSafely).
     const ct = video.currentTime;
     if (ct === this._lastUploadAt) return;
     const gl = this.gl;
@@ -475,15 +456,10 @@ export class Detector {
     this._uploadW = video.videoWidth;
     this._uploadH = video.videoHeight;
     this._lastUploadAt = ct;
-    // New frame uploaded — invalidate downstream caches so the next
-    // crop / diff actually re-runs.
     this._lastCropAt = -1;
-    this._motionRatioAt = -1;
-    this._stillnessRatioAt = -1;
+    this._lastMetricsAt = -1;
   }
 
-  // Crop the ROI sub-rect of _texCur into _texCurCropped (FBO_SIZE²).
-  // After this, every subsequent pass samples at fullscreen 0..1 UV.
   _cropCurrent() {
     if (this._lastCropAt === this._lastUploadAt) return;
     const gl = this.gl;
@@ -504,22 +480,37 @@ export class Detector {
     this._lastCropAt = this._lastUploadAt;
   }
 
-  // Diff _texCurCropped against another fullscreen FBO texture, reduce,
-  // read back the 1×1 motion ratio.
-  _diffCroppedAgainst(otherTex, threshold) {
+  // The single per-frame measurement: upload + crop + metrics shader +
+  // mipmap reduce + readPixels. Returns {motion, drift, avgLuma},
+  // cached for re-entrant calls in the same frame.
+  _computeMetrics(video) {
+    this._uploadCurrent(video);
+    this._cropCurrent();
+    if (this._lastMetricsAt === this._lastUploadAt) {
+      return {
+        motion: this._lastRatio,
+        drift: this._lastBrightnessOffset,
+        avgLuma: this._lastAvgLuma,
+      };
+    }
+
     const gl = this.gl;
     gl.bindFramebuffer(gl.FRAMEBUFFER, this._fboMotion);
     gl.viewport(0, 0, FBO_SIZE, FBO_SIZE);
-    gl.useProgram(this._progDiff);
+    gl.useProgram(this._progMetrics);
     gl.bindVertexArray(this._vao);
     this._quad(0, 0, 1, 1);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this._texCurCropped);
-    gl.uniform1i(this._locDiff.a, 0);
+    gl.uniform1i(this._locMetrics.a, 0);
     gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, otherTex);
-    gl.uniform1i(this._locDiff.b, 1);
-    gl.uniform1f(this._locDiff.thr, threshold);
+    gl.bindTexture(gl.TEXTURE_2D, this._texRef);
+    gl.uniform1i(this._locMetrics.b, 1);
+    gl.uniform1f(this._locMetrics.thr, this.threshold);
+    // Use the previous frame's drift to compensate before thresholding,
+    // so the motion mask doesn't react to a uniform exposure shift
+    // across the whole ROI.
+    gl.uniform1f(this._locMetrics.off, this._lastBrightnessOffset);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
     gl.activeTexture(gl.TEXTURE0);
@@ -528,10 +519,21 @@ export class Detector {
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, this._fboReadback);
     gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, this._readBuf);
-    return this._readBuf[0] / 255;
+
+    const motion = this._readBuf[0] / 255;
+    // Unbias the signed drift channel: the shader wrote (diff*0.5+0.5),
+    // mipmap averaged that, so decoded value = (G/255 - 0.5) * 2.
+    const drift = (this._readBuf[1] / 255 - 0.5) * 2.0;
+    const avgLuma = this._readBuf[2] / 255;
+
+    this._lastRatio = motion;
+    this._lastBrightnessOffset = drift;
+    this._lastAvgLuma = avgLuma;
+    this._lastMetricsAt = this._lastUploadAt;
+
+    return { motion, drift, avgLuma };
   }
 
-  // Full-UV passthrough copy from _texCurCropped into the given FBO.
   _copyCroppedTo(targetFbo) {
     const gl = this.gl;
     gl.bindFramebuffer(gl.FRAMEBUFFER, targetFbo);
@@ -545,8 +547,6 @@ export class Detector {
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
 
-  // Blend cropped current into reference: ref ← mix(ref, cropped, alpha).
-  // Two-pass to avoid sample-from-and-write-to the same texture.
   _blendCroppedIntoReference(alpha) {
     const gl = this.gl;
     // Pass 1: scratch ← mix(ref, cropped, alpha).
