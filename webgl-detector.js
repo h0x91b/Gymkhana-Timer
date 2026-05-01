@@ -179,26 +179,22 @@ export class Detector {
     return this._hasReference;
   }
 
-  // OBSERVING uses this to decide when the ROI is "calm enough" to
-  // capture a fresh reference. The new model: if a reference exists,
-  // "calmness" is just motion ratio (cur vs ref). Before any
-  // reference exists (very first OBSERVING in a session), return 0
-  // so app.js's STABILITY_DURATION timer fires after 2s and we
-  // capture the first one.
-  observeStillness(video /* , stillnessThreshold = 1 */) {
-    if (!this.roi) return 1;
-    if (!this._hasReference) {
-      this._prevStillnessRatio = 0;
-      return 0;
-    }
-    if (!video || !video.videoWidth) return 1;
-    const m = this._computeMetrics(video);
-    this._prevStillnessRatio = m.motion;
-    return m.motion;
+  // Always reports "still" (0). The WebGL detector intentionally
+  // doesn't try to measure stillness anymore — see commit log. The
+  // app's OBSERVING state then enters its STABILITY_DURATION timer
+  // immediately and captures a fresh reference after 2 s, regardless
+  // of what's actually in the ROI. If the rider is still in frame at
+  // capture time the next ARMED will trigger right away and we loop
+  // back through OBSERVING → another 2-second wait → fresh reference,
+  // until the ROI is genuinely empty. Simpler than measuring frame-
+  // to-frame deltas, and immune to whatever sensor noise the canvas
+  // path used to absorb.
+  observeStillness(/* video, stillnessThreshold */) {
+    return 0;
   }
 
   lastStillnessRatio() {
-    return this._prevStillnessRatio;
+    return 0;
   }
 
   lastMotionRatio() {
@@ -213,46 +209,15 @@ export class Detector {
   // frame stillness model is gone; nothing to reset.
   resetStillness() {}
 
-  refreshReferenceSafely(video, metadata, {
-    driftRatioThreshold,
-    maxRatioThreshold,
-    /* stillnessThreshold — no longer needed, motion ratio is the same signal */
-    /* stableDuration, minFrames — single-frame replace/blend in this impl */
-    minInterval,
-    mode,
-    blendAlpha = 1,
-  }) {
-    if (!this.roi || !this._hasReference) return false;
-    if (!video || !video.videoWidth) return false;
-    if (metadata.mediaTime - this._lastReferenceRefreshAt < minInterval) {
-      const remaining = minInterval - (metadata.mediaTime - this._lastReferenceRefreshAt);
-      this._lastReferenceRefreshState = `wait:${remaining.toFixed(1)}s`;
-      return false;
-    }
-
-    const m = this._computeMetrics(video);
-    if (m.motion < driftRatioThreshold) {
-      this._lastReferenceRefreshState = 'idle';
-      return false;
-    }
-    if (m.motion >= maxRatioThreshold) {
-      this._lastReferenceRefreshState = 'blocked:high';
-      return false;
-    }
-
-    if (mode === 'blend') {
-      const alpha = Math.max(0, Math.min(1, blendAlpha));
-      this._blendCroppedIntoReference(alpha);
-      this._lastReferenceRefreshState = 'blend';
-    } else {
-      this._copyCroppedTo(this._fboRef);
-      this._lastReferenceRefreshState = 'replace';
-    }
-    this._lastReferenceRefreshAt = metadata.mediaTime;
-    // After updating the reference, the brightness offset accumulated
-    // against the OLD reference is no longer meaningful — reset.
-    this._lastBrightnessOffset = 0;
-    return true;
+  // No-op in this simplified WebGL build. The reference is captured
+  // once per OBSERVING via captureReference() + the next process()
+  // call, then frozen until the next OBSERVING entry. Adaptive
+  // mid-run refresh adds complexity and edge cases we don't need
+  // until the basic trigger path is rock-solid. Keep the method so
+  // app.js's existing call sites stay valid.
+  refreshReferenceSafely(/* video, metadata, opts */) {
+    this._lastReferenceRefreshState = 'off';
+    return false;
   }
 
   process(video, metadata) {
