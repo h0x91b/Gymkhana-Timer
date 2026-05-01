@@ -3,11 +3,18 @@ const CACHE_VERSION = 'gymkhana-local';
 const ASSETS = [
   './',
   './index.html',
+  // Two app entry points (canvas & WebGL) plus the experimental bench.
+  // The landing page (index.html) is a static picker between them.
+  './canvas-app.html',
+  './webgl-app.html',
+  './webgl-bench.html',
   './style.css',
   './app.js',
+  './app-webgl.js',
   './build-info.js',
   './camera.js',
   './detector.js',
+  './webgl-detector.js',
   './roi.js',
   './timer.js',
   './storage.js',

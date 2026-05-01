@@ -1,0 +1,1050 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>WebGL motion test</title>
+<style>
+  /*
+   * Standalone perf bench. Goal: measure how cheap a "give me one number"
+   * GPU-only motion-detection path can be vs the current drawImage +
+   * getImageData pipeline. This page is intentionally NOT wired into the
+   * production app — it lives only to produce per-stage millisecond
+   * numbers we can use to redesign detector.js with confidence.
+   *
+   * Pipeline measured here:
+   *   1. texImage2D(video, ...)           — GPU upload of the camera frame
+   *   2. diff render                      — fragment shader: |luma(cur) - luma(prev)| > threshold ? 1 : 0
+   *   3. generateMipmap(motionTex)        — 8-level reduce (256×256 → 1×1)
+   *   4. readPixels(0, 0, 1, 1)           — single-pixel readback (GPU sync)
+   *
+   * Each stage is measured separately on the CPU side with performance.now()
+   * (sub-microsecond clock, browser-clamped to ~5 µs). The whole submit
+   * (1–3) is also wrapped in EXT_disjoint_timer_query_webgl2 if available,
+   * which reports nanosecond-precise GPU-only time — so we can tell whether
+   * the cost is GPU work, GPU→CPU sync, or driver overhead.
+   */
+  :root {
+    --parchment: #f5f4ed;
+    --ivory: #faf9f5;
+    --warm-sand: #e9e6d9;
+    --fg: #2b2a26;
+    --fg-2: #5b5851;
+    --terracotta: #c96442;
+    --ring: 0 0 0 1px #d8d3c2;
+    --font-serif: ui-serif, Georgia, "Times New Roman", serif;
+    --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: ui-monospace, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--parchment);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+    height: 100%;
+  }
+  body {
+    display: grid;
+    grid-template-rows: auto auto 1fr auto;
+    height: 100vh;
+  }
+  header {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--warm-sand);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  h1 {
+    font-family: var(--font-serif);
+    font-weight: 500;
+    font-size: 18px;
+    margin: 0;
+    line-height: 1.1;
+  }
+  button {
+    font: inherit;
+    background: var(--terracotta);
+    color: var(--ivory);
+    border: 0;
+    padding: 8px 14px;
+    border-radius: 12px;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+  label {
+    font-size: 13px;
+    color: var(--fg-2);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  input[type="range"] { width: 120px; }
+  main {
+    position: relative;
+    overflow: hidden;
+    background: #000;
+  }
+  /* The <video> stays hidden — we read it through WebGL. The visible
+     preview is the WebGL canvas itself, which we use as a display
+     surface to draw the camera + ROI overlay. */
+  video { display: none; }
+  canvas#display {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+  /* Metrics panel. Numeric, mono, generous spacing; the goal is fast
+     reading on a phone screen propped on a tripod. */
+  footer {
+    padding: 10px 14px;
+    border-top: 1px solid var(--warm-sand);
+    background: var(--ivory);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--fg);
+    max-height: 45vh;
+    overflow-y: auto;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px 16px;
+  }
+  .row {
+    display: grid;
+    grid-template-columns: 110px 1fr;
+    gap: 8px;
+  }
+  .row .lbl { color: var(--fg-2); }
+  .row .val { font-variant-numeric: tabular-nums; }
+  .big {
+    font-family: var(--font-serif);
+    font-size: 28px;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+  }
+  .pill {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: var(--warm-sand);
+    color: var(--fg-2);
+    font-size: 12px;
+  }
+  .err {
+    color: #b03a1f;
+  }
+</style>
+</head>
+<body>
+  <header>
+    <h1>WebGL motion bench</h1>
+    <button id="start">Start camera</button>
+    <button id="refresh" type="button" style="background:var(--warm-sand);color:var(--fg);">Hard refresh</button>
+    <button id="toggleLog" type="button" style="background:var(--warm-sand);color:var(--fg);">Log</button>
+    <label>threshold
+      <input id="threshold" type="range" min="0" max="0.5" step="0.005" value="0.08">
+      <span id="thrVal">0.080</span>
+    </label>
+    <span id="caps" class="pill">caps: …</span>
+    <span id="err" class="err"></span>
+  </header>
+  <pre id="log" hidden style="margin:0;padding:6px 14px;background:var(--warm-sand);font-family:var(--font-mono);font-size:11px;line-height:1.4;color:var(--fg);max-height:120px;overflow:auto;white-space:pre-wrap;"></pre>
+  <main>
+    <video id="video" playsinline muted autoplay></video>
+    <canvas id="display"></canvas>
+  </main>
+  <footer>
+    <div class="grid">
+      <div>
+        <div class="row"><span class="lbl">FPS</span><span class="val big" id="m-fps">—</span></div>
+        <div class="row"><span class="lbl">motion</span><span class="val big" id="m-motion">—</span></div>
+      </div>
+      <div>
+        <div class="row"><span class="lbl">video</span><span class="val" id="m-video">—</span></div>
+        <div class="row"><span class="lbl">ROI</span><span class="val" id="m-roi">—</span></div>
+        <div class="row"><span class="lbl">FBO</span><span class="val" id="m-fbo">256×256, 8 mip levels</span></div>
+      </div>
+    </div>
+    <hr style="border:0;border-top:1px solid var(--warm-sand);margin:8px 0;">
+    <div class="grid">
+      <div>
+        <div class="row"><span class="lbl">upload</span><span class="val" id="m-upload">—</span></div>
+        <div class="row"><span class="lbl">diff draw</span><span class="val" id="m-diff">—</span></div>
+        <div class="row"><span class="lbl">mipmap</span><span class="val" id="m-mipmap">—</span></div>
+        <div class="row"><span class="lbl">readPixels</span><span class="val" id="m-read">—</span></div>
+      </div>
+      <div>
+        <div class="row"><span class="lbl">CPU total</span><span class="val" id="m-cpu">—</span></div>
+        <div class="row"><span class="lbl">GPU total</span><span class="val" id="m-gpu">—</span></div>
+        <div class="row"><span class="lbl">frame Δt</span><span class="val" id="m-dt">—</span></div>
+        <div class="row"><span class="lbl">samples</span><span class="val" id="m-n">0</span></div>
+      </div>
+    </div>
+    <div style="margin-top:6px;color:var(--fg-2);font-size:12px;">
+      All values are median / p95 over the last 60 frames. CPU columns measured with performance.now()
+      (sub-µs); readPixels includes the GPU→CPU sync stall and is the single most important number.
+      GPU total comes from EXT_disjoint_timer_query_webgl2 (nanosecond precision, asynchronous).
+    </div>
+  </footer>
+
+<script type="module">
+/* --------------------------------------------------------------------- *
+ * Hard-refresh button                                                   *
+ *                                                                       *
+ * The main app's service worker (sw.js) intercepts every GET on this    *
+ * origin via `caches.match(req) || fetch(req)`. webgl-motion-test.html  *
+ * isn't in its precache list, so a fetch should pass through — but in   *
+ * pathological states (offline mode entered earlier, stale waiting SW,  *
+ * a runtime cache populated by some other code path) the bench can end  *
+ * up served from a stale cache. This button nukes every SW cache,       *
+ * unregisters every SW on this origin, and reloads with a cache-buster  *
+ * query so even the HTTP cache cannot win. Wired up FIRST, before any   *
+ * other init runs, so it's always usable even if the rest of the page   *
+ * later throws.                                                         *
+ * ------------------------------------------------------------------- */
+document.getElementById('toggleLog').addEventListener('click', () => {
+  const el = document.getElementById('log');
+  el.hidden = !el.hidden;
+});
+
+document.getElementById('refresh').addEventListener('click', async () => {
+  const btn = document.getElementById('refresh');
+  btn.disabled = true;
+  btn.textContent = 'refreshing…';
+  try {
+    if ('caches' in self) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    }
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.unregister()));
+    }
+  } catch (_) {
+    // Ignore — we still want to reload even if the cleanup partially failed.
+  }
+  // Cache-bust the URL itself. location.reload(true) is a no-op on
+  // modern Chromium (forceReload was removed); a query change forces
+  // a fresh HTTP fetch.
+  const u = new URL(location.href);
+  u.searchParams.set('nocache', String(Date.now()));
+  location.replace(u.toString());
+});
+
+/* --------------------------------------------------------------------- *
+ * Global error surfacing                                                *
+ *                                                                       *
+ * Without this, a failure on a quirky device (Xiaomi MIUI WebView,      *
+ * Samsung Browser, older Android Chromes) typically produces a black    *
+ * screen and nothing useful in the UI — the page caught no exception,   *
+ * so its visible state never updated, and the rider has no way to       *
+ * tell us what broke. We forward every unhandled error AND every        *
+ * unhandled promise rejection to the on-page error label and an alert,  *
+ * so a single screenshot tells us the message + filename + line.        *
+ * ------------------------------------------------------------------- */
+function reportError(scope, err) {
+  const msg = (err && (err.stack || err.message)) || String(err);
+  const text = `[${scope}] ${msg}`;
+  const el = document.getElementById('err');
+  if (el) el.textContent = text;
+  // Use a microtask so the DOM update lands before the alert blocks paint.
+  Promise.resolve().then(() => {
+    try { alert(text); } catch (_) { /* alerts can be blocked in fullscreen PWAs */ }
+  });
+  // Also keep it in console for desktop debugging.
+  console.error(text);
+}
+window.addEventListener('error', (ev) => {
+  reportError('window.error', ev.error || ev.message);
+});
+window.addEventListener('unhandledrejection', (ev) => {
+  reportError('unhandledrejection', ev.reason);
+});
+
+/* --------------------------------------------------------------------- *
+ * Log helper. Every interesting milestone goes through here so a phone  *
+ * screenshot of the log panel is enough to understand what happened.    *
+ * Non-blocking: we never gate control flow on a log event firing.       *
+ * ------------------------------------------------------------------- */
+const logEl = document.getElementById('log');
+function logLine(...parts) {
+  const t = new Date().toISOString().slice(11, 23);
+  const line = `${t}  ${parts.join(' ')}`;
+  if (logEl) {
+    logEl.textContent += line + '\n';
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  console.log(line);
+}
+
+/* --------------------------------------------------------------------- *
+ * Constants                                                             *
+ * --------------------------------------------------------------------- */
+const ROI_W = 400;
+const ROI_H = 500;
+// FBO size is power-of-two so generateMipmap reduces cleanly to 1×1
+// without any rounding. 256² = 8 mip levels (256, 128, 64, 32, 16, 8, 4, 2, 1).
+const FBO_SIZE = 256;
+const FBO_MIP_LEVELS = Math.log2(FBO_SIZE) | 0; // 8 — index of the 1×1 level
+const SAMPLE_WINDOW = 60;
+
+/* --------------------------------------------------------------------- *
+ * DOM                                                                   *
+ * --------------------------------------------------------------------- */
+const video = document.getElementById('video');
+const canvas = document.getElementById('display');
+const btnStart = document.getElementById('start');
+const errEl = document.getElementById('err');
+const capsEl = document.getElementById('caps');
+const thrEl = document.getElementById('threshold');
+const thrValEl = document.getElementById('thrVal');
+const m = {
+  fps: document.getElementById('m-fps'),
+  motion: document.getElementById('m-motion'),
+  upload: document.getElementById('m-upload'),
+  diff: document.getElementById('m-diff'),
+  mipmap: document.getElementById('m-mipmap'),
+  read: document.getElementById('m-read'),
+  cpu: document.getElementById('m-cpu'),
+  gpu: document.getElementById('m-gpu'),
+  dt: document.getElementById('m-dt'),
+  n: document.getElementById('m-n'),
+  video: document.getElementById('m-video'),
+  roi: document.getElementById('m-roi'),
+};
+
+/* --------------------------------------------------------------------- *
+ * WebGL2 context                                                        *
+ * --------------------------------------------------------------------- */
+const gl = canvas.getContext('webgl2', {
+  antialias: false,
+  preserveDrawingBuffer: false,
+  alpha: false,
+});
+if (!gl) {
+  errEl.textContent = 'WebGL2 not available on this device.';
+  throw new Error('webgl2 missing');
+}
+
+// Optional GPU-side timer extension. When present we can attribute the
+// real GPU work separately from CPU submit + driver overhead. Without it
+// readPixels is still the canonical "GPU stall" number (it sync-waits).
+const tqExt = gl.getExtension('EXT_disjoint_timer_query_webgl2');
+capsEl.textContent = `caps: WebGL2${tqExt ? ' + GPU timer queries' : ''}`;
+
+/* --------------------------------------------------------------------- *
+ * Programs                                                              *
+ * --------------------------------------------------------------------- */
+function compile(type, source) {
+  const sh = gl.createShader(type);
+  gl.shaderSource(sh, source);
+  gl.compileShader(sh);
+  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+    throw new Error(gl.getShaderInfoLog(sh) || 'shader compile failed');
+  }
+  return sh;
+}
+function link(vs, fs) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vs));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    throw new Error(gl.getProgramInfoLog(p) || 'program link failed');
+  }
+  return p;
+}
+
+// Vertex shader is shared. UV is supplied per-vertex so the SAME quad
+// can be reused for the ROI sub-region (passing video-relative UVs) and
+// for fullscreen blits (passing 0..1 UVs).
+const VS = `#version 300 es
+in vec2 aPos;
+in vec2 aUv;
+out vec2 vUv;
+void main() {
+  gl_Position = vec4(aPos, 0.0, 1.0);
+  vUv = aUv;
+}`;
+
+// Diff pass: samples cur + prev frame at the ROI sub-region (UVs map to
+// the ROI in video coords), computes Rec.601 luma for each, outputs 1.0
+// if |Δluma| > threshold else 0.0. Because subsequent generateMipmap
+// averages 2×2 blocks all the way down, the final 1×1 pixel ends up as
+// the FRACTION of pixels above threshold — i.e. the motion ratio.
+const FS_DIFF = `#version 300 es
+precision highp float;
+uniform sampler2D uCur;
+uniform sampler2D uPrev;
+uniform float uThreshold;
+in vec2 vUv;
+out vec4 outColor;
+const vec3 LUMA = vec3(0.299, 0.587, 0.114);
+void main() {
+  float lc = dot(texture(uCur, vUv).rgb, LUMA);
+  float lp = dot(texture(uPrev, vUv).rgb, LUMA);
+  float moved = step(uThreshold, abs(lc - lp));
+  outColor = vec4(moved, moved, moved, 1.0);
+}`;
+
+// Display pass: just draws the camera into the screen-sized canvas with
+// a ROI tint so the user can SEE what the shader is actually sampling.
+const FS_DISPLAY = `#version 300 es
+precision highp float;
+uniform sampler2D uTex;
+uniform vec4 uRoi;     // (left, top, right, bottom) in UV
+in vec2 vUv;
+out vec4 outColor;
+void main() {
+  vec3 c = texture(uTex, vUv).rgb;
+  // Tint the ROI region green-ish so it's visible.
+  bool inside = vUv.x >= uRoi.x && vUv.x <= uRoi.z
+             && vUv.y >= uRoi.y && vUv.y <= uRoi.w;
+  if (inside) c = mix(c, vec3(0.2, 0.9, 0.4), 0.18);
+  outColor = vec4(c, 1.0);
+}`;
+
+const progDiff = link(VS, FS_DIFF);
+const progDisp = link(VS, FS_DISPLAY);
+const locDiff = {
+  pos: gl.getAttribLocation(progDiff, 'aPos'),
+  uv:  gl.getAttribLocation(progDiff, 'aUv'),
+  cur: gl.getUniformLocation(progDiff, 'uCur'),
+  prev: gl.getUniformLocation(progDiff, 'uPrev'),
+  thr: gl.getUniformLocation(progDiff, 'uThreshold'),
+};
+const locDisp = {
+  pos: gl.getAttribLocation(progDisp, 'aPos'),
+  uv:  gl.getAttribLocation(progDisp, 'aUv'),
+  tex: gl.getUniformLocation(progDisp, 'uTex'),
+  roi: gl.getUniformLocation(progDisp, 'uRoi'),
+};
+
+/* --------------------------------------------------------------------- *
+ * Geometry                                                              *
+ * --------------------------------------------------------------------- */
+// VBO holds one fullscreen quad in clip space. UVs are filled in later
+// (per draw) so the same VBO can be reused for ROI-only and fullscreen
+// passes. Layout: x, y, u, v interleaved, 4 vertices, triangle strip.
+const vbo = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(16), gl.DYNAMIC_DRAW);
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+// Both programs use the same attribute locations, but to be safe we
+// re-bind in each program before drawing. For the VAO setup we use
+// generic positions 0 and 1.
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 16, 0);
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 16, 8);
+gl.bindVertexArray(null);
+
+function fillQuad(uvLeft, uvTop, uvRight, uvBottom) {
+  // Clip-space corners: (-1,-1), (1,-1), (-1,1), (1,1) in triangle-strip order.
+  // UV maps the chosen sub-region; vTop maps to clip-space +1 (top of FBO),
+  // vBottom maps to clip-space -1 (bottom of FBO).
+  const data = new Float32Array([
+    -1, -1, uvLeft,  uvBottom,
+     1, -1, uvRight, uvBottom,
+    -1,  1, uvLeft,  uvTop,
+     1,  1, uvRight, uvTop,
+  ]);
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, data);
+}
+
+/* --------------------------------------------------------------------- *
+ * Textures                                                              *
+ * --------------------------------------------------------------------- */
+function makeVideoTex() {
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return tex;
+}
+const texCur = makeVideoTex();
+const texPrev = makeVideoTex();
+let texCurRef = texCur;
+let texPrevRef = texPrev;
+
+// Motion FBO target — RGBA8, mipmapped down to 1×1. Trilinear-style
+// reduction is the default for generateMipmap; on every level a 2×2
+// box-average is performed, so the final 1×1 pixel equals the mean of
+// every fragment from the diff pass — i.e. the fraction of pixels that
+// crossed the threshold.
+const motionTex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, motionTex);
+gl.texStorage2D(gl.TEXTURE_2D, FBO_MIP_LEVELS + 1, gl.RGBA8, FBO_SIZE, FBO_SIZE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_NEAREST);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+const fboBase = gl.createFramebuffer();
+gl.bindFramebuffer(gl.FRAMEBUFFER, fboBase);
+gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, motionTex, 0);
+if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+  throw new Error('FBO not complete');
+}
+gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+// Reusable FBO for the 1×1 readback — re-uses the same motionTex but
+// with framebufferTexture2D pointing at the smallest mip level.
+const fboRead = gl.createFramebuffer();
+gl.bindFramebuffer(gl.FRAMEBUFFER, fboRead);
+gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, motionTex, FBO_MIP_LEVELS);
+gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+/* --------------------------------------------------------------------- *
+ * Camera                                                                *
+ * --------------------------------------------------------------------- */
+// Camera constraints reused by both the initial start and the recovery
+// path that re-acquires the stream after Android backgrounds the tab
+// and ends the original tracks.
+const CAMERA_CONSTRAINTS = {
+  audio: false,
+  video: {
+    facingMode: 'environment',
+    frameRate: { ideal: 60 },
+    width: { ideal: 1280 },
+    height: { ideal: 720 },
+  },
+};
+
+// Module-scope state used by recover(). currentStream lets us stop the
+// previous stream's tracks before swapping in a new one; cameraStarted
+// gates recovery so it never runs before the user has hit Start.
+let currentStream = null;
+let cameraStarted = false;
+
+// startCamera mirrors the very first (working) version of this page
+// EXACTLY. No timeouts, no watchdogs, no flags around rVFC. Earlier
+// commits added "diagnostics" that subtly changed the control flow
+// (early-bailing on play(), gating rVFC re-arm on a flag) and broke
+// devices that worked perfectly fine before. The only additions kept
+// from the diagnostic experiments are non-invasive: event listeners
+// for log lines, and the global error reporter.
+async function startCamera() {
+  btnStart.disabled = true;
+  btnStart.textContent = 'starting…';
+  logLine('UA:', navigator.userAgent);
+  logLine('rVFC supported:', 'requestVideoFrameCallback' in HTMLVideoElement.prototype);
+
+  // Diagnostic event listeners — registered before srcObject so we
+  // never miss the first event. They only log; they never block.
+  video.addEventListener('loadedmetadata', () => {
+    logLine('event loadedmetadata:', video.videoWidth + '×' + video.videoHeight);
+  }, { once: true });
+  video.addEventListener('loadeddata', () => {
+    logLine('event loadeddata: readyState=' + video.readyState);
+  }, { once: true });
+  video.addEventListener('playing', () => {
+    logLine('event playing');
+  }, { once: true });
+  video.addEventListener('error', () => {
+    logLine('event video error: code=' + (video.error && video.error.code));
+  });
+
+  try {
+    logLine('getUserMedia: requesting…');
+    const stream = await navigator.mediaDevices.getUserMedia(CAMERA_CONSTRAINTS);
+    const track = stream.getVideoTracks()[0];
+    const settings = track ? track.getSettings() : {};
+    logLine('getUserMedia: ok', JSON.stringify({
+      label: track && track.label,
+      w: settings.width, h: settings.height,
+      fps: settings.frameRate, facing: settings.facingMode,
+    }));
+    currentStream = stream;
+    attachTrackListeners(stream);
+
+    video.srcObject = stream;
+    logLine('video.play(): calling…');
+    await video.play();
+    logLine('video.play(): resolved, videoWidth=' + video.videoWidth);
+    btnStart.textContent = 'running';
+    cameraStarted = true;
+
+    // Same as first-commit version: rVFC if available, plain rAF otherwise.
+    // No flags, no watchdog gates — onFrame re-arms itself unconditionally.
+    if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+      logLine('frame loop: rVFC');
+      video.requestVideoFrameCallback(onFrame);
+    } else {
+      logLine('frame loop: rAF fallback');
+      const tick = () => {
+        onFrame(performance.now(), { mediaTime: performance.now() / 1000 });
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    }
+  } catch (err) {
+    btnStart.disabled = false;
+    btnStart.textContent = 'Start camera';
+    reportError('startCamera', err);
+  }
+}
+btnStart.addEventListener('click', startCamera);
+
+/* --------------------------------------------------------------------- *
+ * Per-frame loop                                                        *
+ * --------------------------------------------------------------------- */
+let firstFrame = true;
+let prevMediaTime = 0;
+let threshold = parseFloat(thrEl.value);
+const readbackBuf = new Uint8Array(4);
+
+// Rolling sample storage. Each metric is a circular buffer; we recompute
+// median + p95 on every render of the metrics row.
+const samples = {
+  upload: new Float32Array(SAMPLE_WINDOW),
+  diff:   new Float32Array(SAMPLE_WINDOW),
+  mipmap: new Float32Array(SAMPLE_WINDOW),
+  read:   new Float32Array(SAMPLE_WINDOW),
+  cpu:    new Float32Array(SAMPLE_WINDOW),
+  gpu:    new Float32Array(SAMPLE_WINDOW),
+  dt:     new Float32Array(SAMPLE_WINDOW),
+};
+let sampleIdx = 0;
+let sampleCount = 0;
+let lastUiUpdate = 0;
+let lastMotion = 0;
+
+// GPU timer query queue. We submit a query each frame and poll older
+// queries' availability; results land 1–3 frames later but are accurate
+// to the GPU's hardware timer (typically nanoseconds). We never block on
+// them — if a result isn't ready, we just keep going.
+const gpuQueryQueue = [];
+
+function resizeDisplay() {
+  const w = canvas.clientWidth | 0;
+  const h = canvas.clientHeight | 0;
+  if (canvas.width !== w * devicePixelRatio || canvas.height !== h * devicePixelRatio) {
+    canvas.width = Math.max(1, w * devicePixelRatio);
+    canvas.height = Math.max(1, h * devicePixelRatio);
+  }
+}
+
+thrEl.addEventListener('input', () => {
+  threshold = parseFloat(thrEl.value);
+  thrValEl.textContent = threshold.toFixed(3);
+});
+
+function onFrame(_now, metadata) {
+  // requestVideoFrameCallback swallows any thrown exception silently
+  // (the spec discards it), so without this wrapper a quirky-device
+  // failure ends in a frozen black screen with zero diagnostics.
+  try {
+    onFrameImpl(_now, metadata);
+  } catch (err) {
+    reportError('onFrame', err);
+  }
+}
+let firstFrameLogged = false;
+function onFrameImpl(_now, metadata) {
+  if (!video.videoWidth) {
+    // Match the first-commit behaviour: unconditionally re-arm rVFC.
+    // The rAF fallback path overwrites onFrame's caller (it doesn't go
+    // through rVFC at all), so this re-arm is a no-op in that case.
+    video.requestVideoFrameCallback(onFrame);
+    return;
+  }
+  if (!firstFrameLogged) {
+    firstFrameLogged = true;
+    logLine('first frame:', video.videoWidth + '×' + video.videoHeight,
+      'mediaTime=' + (metadata.mediaTime || 0).toFixed(3));
+  }
+  const VW = video.videoWidth;
+  const VH = video.videoHeight;
+  m.video.textContent = `${VW}×${VH}`;
+
+  // Compute the ROI in UV coordinates. ROI is a 400×500 box centered in
+  // the video pixel grid. We clamp to video bounds in case the camera
+  // delivers a smaller stream than expected (e.g. 640×480 on cheap webcams).
+  const roiW = Math.min(ROI_W, VW);
+  const roiH = Math.min(ROI_H, VH);
+  const roiX = ((VW - roiW) / 2) | 0;
+  const roiY = ((VH - roiH) / 2) | 0;
+  m.roi.textContent = `${roiW}×${roiH} @ (${roiX},${roiY})`;
+
+  // UNPACK_FLIP_Y_WEBGL makes UV (0,0) correspond to the TOP-LEFT of the
+  // uploaded video frame, which matches how we naturally think about ROI
+  // coordinates (top-down pixel addressing).
+  const uvLeft   = roiX / VW;
+  const uvRight  = (roiX + roiW) / VW;
+  const uvTop    = roiY / VH;
+  const uvBottom = (roiY + roiH) / VH;
+
+  /* ------------------------------------------------------------------- *
+   * STAGE 1 — texImage2D: upload the camera frame into a GPU texture.   *
+   * On most platforms this is zero-copy (texture aliases the video      *
+   * frame's GPU resource); on some Android drivers it's a real copy.    *
+   * Either way, no CPU readback happens here.                           *
+   * ------------------------------------------------------------------- */
+  const t0 = performance.now();
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.bindTexture(gl.TEXTURE_2D, texCurRef);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+  const t1 = performance.now();
+
+  // First frame seeds the prev texture too — otherwise the very first
+  // diff pass would see a black "previous" frame and report ~100% motion.
+  if (firstFrame) {
+    gl.bindTexture(gl.TEXTURE_2D, texPrevRef);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+    firstFrame = false;
+  }
+
+  /* ------------------------------------------------------------------- *
+   * STAGE 2 — diff pass. Render the ROI sub-region of (cur, prev) into  *
+   * the 256×256 base mip of motionTex with a fragment shader that emits *
+   * 1.0 where motion crosses threshold else 0.0.                        *
+   * ------------------------------------------------------------------- */
+  let gpuQuery = null;
+  if (tqExt) {
+    gpuQuery = gl.createQuery();
+    gl.beginQuery(tqExt.TIME_ELAPSED_EXT, gpuQuery);
+  }
+
+  fillQuad(uvLeft, uvTop, uvRight, uvBottom);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fboBase);
+  gl.viewport(0, 0, FBO_SIZE, FBO_SIZE);
+  gl.useProgram(progDiff);
+  gl.bindVertexArray(vao);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, texCurRef);
+  gl.uniform1i(locDiff.cur, 0);
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, texPrevRef);
+  gl.uniform1i(locDiff.prev, 1);
+  gl.uniform1f(locDiff.thr, threshold);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  const t2 = performance.now();
+
+  /* ------------------------------------------------------------------- *
+   * STAGE 3 — generateMipmap. 2×2 box-average chain reduces 256² → 1.   *
+   * The 1×1 pixel ends up holding the MEAN of the diff pass, i.e. the   *
+   * fraction of fragments above threshold = the motion ratio.           *
+   * ------------------------------------------------------------------- */
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, motionTex);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  const t3 = performance.now();
+
+  if (tqExt) {
+    gl.endQuery(tqExt.TIME_ELAPSED_EXT);
+    gpuQueryQueue.push(gpuQuery);
+  }
+
+  /* ------------------------------------------------------------------- *
+   * STAGE 4 — readPixels(0, 0, 1, 1). This is the canonical GPU stall:  *
+   * the call blocks until the entire pipeline above has finished, then  *
+   * copies four bytes back to the CPU. Because we read a SINGLE pixel,  *
+   * the actual byte transfer is negligible — the cost here is pure      *
+   * GPU→CPU sync. This is the number we most want to minimize.          *
+   * ------------------------------------------------------------------- */
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fboRead);
+  gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, readbackBuf);
+  const t4 = performance.now();
+
+  // Convert R channel (0..255) to motion ratio (0..1).
+  lastMotion = readbackBuf[0] / 255;
+
+  /* ------------------------------------------------------------------- *
+   * Display pass — draw the camera into the visible canvas with a tint  *
+   * over the ROI box. NOT counted in any of the timing buckets above —  *
+   * it represents debug overlay work, not the detection pipeline.       *
+   * ------------------------------------------------------------------- */
+  resizeDisplay();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  // For the display pass we want fullscreen UVs; flip V so the upright
+  // video draws right-side up (UNPACK_FLIP_Y already flipped on upload).
+  fillQuad(0, 1, 1, 0);
+  gl.useProgram(progDisp);
+  gl.bindVertexArray(vao);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, texCurRef);
+  gl.uniform1i(locDisp.tex, 0);
+  // ROI uniform uses display UVs (0..1 of the displayed canvas), which
+  // map 1:1 to video UVs because the display draws the full frame.
+  gl.uniform4f(locDisp.roi, uvLeft, 1 - uvBottom, uvRight, 1 - uvTop);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+  // Swap cur ↔ prev for the next frame.
+  const tmp = texPrevRef;
+  texPrevRef = texCurRef;
+  texCurRef = tmp;
+
+  /* ------------------------------------------------------------------- *
+   * Sample collection                                                   *
+   * ------------------------------------------------------------------- */
+  const dt = prevMediaTime ? (metadata.mediaTime - prevMediaTime) * 1000 : 0;
+  prevMediaTime = metadata.mediaTime;
+
+  const i = sampleIdx;
+  samples.upload[i] = t1 - t0;
+  samples.diff[i]   = t2 - t1;
+  samples.mipmap[i] = t3 - t2;
+  samples.read[i]   = t4 - t3;
+  samples.cpu[i]    = t4 - t0;
+  samples.dt[i]     = dt;
+  // GPU sample is filled retroactively when its query result becomes
+  // available — see the drain step below.
+  samples.gpu[i] = -1;
+  sampleIdx = (sampleIdx + 1) % SAMPLE_WINDOW;
+  if (sampleCount < SAMPLE_WINDOW) sampleCount++;
+
+  drainGpuQueries();
+
+  // UI throttling — recomputing 7 medians + 7 p95s every frame is fine
+  // CPU-wise but the DOM writes flicker if updated faster than ~10 Hz.
+  const nowMs = performance.now();
+  if (nowMs - lastUiUpdate >= 100) {
+    lastUiUpdate = nowMs;
+    renderMetrics();
+  }
+
+  // Unconditional re-arm — same as the first-commit version. If the
+  // page is on the rAF path (rVFC missing on the prototype) this call
+  // would throw; we don't reach here in that case because the rAF tick
+  // calls onFrame separately and rVFC isn't installed at all.
+  if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+    video.requestVideoFrameCallback(onFrame);
+  }
+}
+
+/* --------------------------------------------------------------------- *
+ * GPU query drain. Polls older queries non-blockingly; whichever finishes *
+ * gets its time recorded into the most recent empty GPU sample slot.    *
+ * --------------------------------------------------------------------- */
+function drainGpuQueries() {
+  if (!tqExt) return;
+  while (gpuQueryQueue.length > 0) {
+    const q = gpuQueryQueue[0];
+    const ready = gl.getQueryParameter(q, gl.QUERY_RESULT_AVAILABLE);
+    const disjoint = gl.getParameter(tqExt.GPU_DISJOINT_EXT);
+    if (!ready) break;
+    gpuQueryQueue.shift();
+    if (disjoint) {
+      // System clock changed mid-measurement — discard this sample.
+      gl.deleteQuery(q);
+      continue;
+    }
+    const ns = gl.getQueryParameter(q, gl.QUERY_RESULT);
+    gl.deleteQuery(q);
+    // Find the most recent slot still flagged -1 and fill it. We don't
+    // align by frame — slight skew is fine because we only display
+    // medians over a 60-frame window.
+    for (let k = 0; k < sampleCount; k++) {
+      const idx = (sampleIdx - 1 - k + SAMPLE_WINDOW) % SAMPLE_WINDOW;
+      if (samples.gpu[idx] < 0) {
+        samples.gpu[idx] = ns / 1e6; // ns → ms
+        break;
+      }
+    }
+  }
+}
+
+/* --------------------------------------------------------------------- *
+ * Metrics render                                                        *
+ * --------------------------------------------------------------------- */
+const tmpSort = new Float32Array(SAMPLE_WINDOW);
+function quantiles(buf) {
+  if (sampleCount === 0) return [NaN, NaN];
+  let n = 0;
+  for (let i = 0; i < sampleCount; i++) {
+    const v = buf[i];
+    if (v >= 0) tmpSort[n++] = v;
+  }
+  if (n === 0) return [NaN, NaN];
+  // Subarray sort — typed arrays sort numerically by default.
+  const slice = tmpSort.subarray(0, n);
+  slice.sort();
+  const p50 = slice[(n / 2) | 0];
+  const p95 = slice[Math.min(n - 1, (n * 0.95) | 0)];
+  return [p50, p95];
+}
+function fmt(ms) {
+  if (!Number.isFinite(ms)) return '—';
+  if (ms < 0.01) return ms.toFixed(3) + ' ms';
+  if (ms < 1) return ms.toFixed(3) + ' ms';
+  return ms.toFixed(2) + ' ms';
+}
+function renderRow(el, buf) {
+  const [p50, p95] = quantiles(buf);
+  el.textContent = `${fmt(p50)}  (p95 ${fmt(p95)})`;
+}
+function renderMetrics() {
+  renderRow(m.upload, samples.upload);
+  renderRow(m.diff,   samples.diff);
+  renderRow(m.mipmap, samples.mipmap);
+  renderRow(m.read,   samples.read);
+  renderRow(m.cpu,    samples.cpu);
+  renderRow(m.gpu,    samples.gpu);
+  // dt → also show derived FPS.
+  const [dtP50] = quantiles(samples.dt);
+  if (Number.isFinite(dtP50) && dtP50 > 0) {
+    m.dt.textContent = `${dtP50.toFixed(2)} ms`;
+    m.fps.textContent = (1000 / dtP50).toFixed(1);
+  }
+  m.motion.textContent = lastMotion.toFixed(3);
+  m.n.textContent = String(sampleCount);
+}
+
+/* --------------------------------------------------------------------- *
+ * Recovery after backgrounding                                          *
+ *                                                                       *
+ * Reported symptom: opening the page works on first load but after the  *
+ * tab is backgrounded (Alt-Tab, lock screen, switching apps) the camera *
+ * never comes back. Three independent root causes are possible on       *
+ * Android Chrome and we defend against all of them here:                *
+ *                                                                       *
+ *   1. MediaStreamTrack ends. Chrome on Android may auto-stop video     *
+ *      tracks while the tab is hidden to release the camera. On         *
+ *      visibility return the existing track stays in readyState=ended   *
+ *      forever; calling play() does nothing, the video is dead.         *
+ *      → On track 'ended' OR on visibility return with an ended track,  *
+ *        re-acquire the stream via getUserMedia(CAMERA_CONSTRAINTS),    *
+ *        swap srcObject, and play() again.                              *
+ *                                                                       *
+ *   2. WebGL context is lost. Android Chrome aggressively releases GPU  *
+ *      contexts in the background. Without listeners, all subsequent    *
+ *      texImage2D / drawArrays / readPixels calls silently no-op while  *
+ *      reporting wrong values, which looks identical to "camera dead".  *
+ *      → preventDefault() the loss event so the browser tries to        *
+ *        restore. If it isn't restored within 2s we location.reload()   *
+ *        — re-creating every program / texture / FBO / VAO from scratch *
+ *        is significant work and a clean reload is more reliable.       *
+ *                                                                       *
+ *   3. video.paused becomes true and rVFC stops firing. Some Android    *
+ *      stacks pause the video on hide and never resume even when tracks *
+ *      are still live.                                                  *
+ *      → On visibility return, if track is alive but video.paused, call *
+ *        play() and re-arm rVFC for safety.                             *
+ *                                                                       *
+ * Recovery never runs before the user has hit Start (cameraStarted gate).*
+ * Every action is logged so a screenshot of the Log panel reveals which *
+ * branch fired.                                                         *
+ * ------------------------------------------------------------------- */
+function attachTrackListeners(stream) {
+  for (const track of stream.getVideoTracks()) {
+    track.addEventListener('ended', () => {
+      logLine('track ended: ' + track.label);
+      if (document.visibilityState === 'visible') recover();
+    });
+    track.addEventListener('mute', () => logLine('track muted'));
+    track.addEventListener('unmute', () => logLine('track unmuted'));
+  }
+}
+
+let recovering = false;
+async function recover() {
+  if (!cameraStarted) return;
+  if (recovering) return;
+  recovering = true;
+  try {
+    logLine('recover: visibility=' + document.visibilityState
+      + ' paused=' + video.paused
+      + ' readyState=' + video.readyState
+      + ' contextLost=' + gl.isContextLost());
+
+    if (gl.isContextLost()) {
+      logLine('recover: WebGL context lost — waiting for restore');
+      // The webglcontextlost listener has its own watchdog; nothing to
+      // do here. Don't touch the stream — leave that to a fresh load.
+      return;
+    }
+
+    // Track liveness check. If the track is gone or ended we MUST
+    // re-acquire — playing a dead stream produces a black frame forever.
+    const track = currentStream && currentStream.getVideoTracks()[0];
+    if (!track || track.readyState === 'ended') {
+      logLine('recover: re-acquiring stream (track '
+        + (track ? 'ended' : 'missing') + ')');
+      // Drop the old stream's tracks before requesting a new one — some
+      // Android stacks refuse the second getUserMedia until previous
+      // tracks are stopped.
+      if (currentStream) {
+        for (const t of currentStream.getTracks()) {
+          try { t.stop(); } catch (_) {}
+        }
+      }
+      try {
+        const fresh = await navigator.mediaDevices.getUserMedia(CAMERA_CONSTRAINTS);
+        currentStream = fresh;
+        attachTrackListeners(fresh);
+        video.srcObject = fresh;
+        await video.play();
+        logLine('recover: stream restored, videoWidth=' + video.videoWidth);
+        if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+          video.requestVideoFrameCallback(onFrame);
+        }
+      } catch (err) {
+        reportError('recover.getUserMedia', err);
+      }
+      return;
+    }
+
+    // Track is alive — make sure video is playing and rVFC is re-armed.
+    if (video.paused) {
+      logLine('recover: video paused, calling play()');
+      try {
+        await video.play();
+        logLine('recover: play() resolved');
+      } catch (err) {
+        logLine('recover: play() rejected: ' + (err.message || err));
+      }
+    }
+    if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+      // Cheap and idempotent — duplicate registrations are deduplicated
+      // by the spec; this just guarantees we have at least one pending.
+      video.requestVideoFrameCallback(onFrame);
+    }
+  } finally {
+    recovering = false;
+  }
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') recover();
+});
+
+// WebGL context-loss listeners. These attach to the canvas, not the
+// gl object — context-loss events fire on the HTMLCanvasElement.
+canvas.addEventListener('webglcontextlost', (ev) => {
+  // preventDefault signals to the browser we'd like the context back;
+  // without it the context is permanently dead.
+  ev.preventDefault();
+  logLine('!! webglcontextlost — preventDefault, awaiting restore');
+  setTimeout(() => {
+    if (gl.isContextLost()) {
+      logLine('!! context not restored in 2s — reloading');
+      location.reload();
+    }
+  }, 2000);
+});
+canvas.addEventListener('webglcontextrestored', () => {
+  // Re-creating every program, texture, FBO, VAO is a non-trivial
+  // refactor (everything was created at top-level const). A clean
+  // reload reuses the simpler init path and is reliable.
+  logLine('webglcontextrestored — reloading to reinit GL resources');
+  location.reload();
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Gymkhana Timer · WebGL</title>
+<style>
+  /*
+   * webgl-app.html — production gymkhana timer running on the WebGL2
+   * pipeline that webgl-bench.html proved out at a stable 60 FPS.
+   *
+   * UI is intentionally a clean rebuild — not a copy of canvas-app.html.
+   * The only invariants are the ones that matter at 10 m on a tripod:
+   *   (1) huge centred timer in serif tabular numerals,
+   *   (2) a saturated signal-coloured tint that tells the rider what
+   *       phase we're in (orange = wait, green = ready, parchment =
+   *       running, ivory = finished flash, red = stuck observing).
+   * Everything else (controls, log, debug) is incidental chrome that
+   * must not compete with the timer for attention.
+   */
+
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    overflow: hidden;
+    background: #0b0b0c;
+    color: #f5f4ed;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+  }
+
+  /* The WebGL canvas is the visible camera preview. It fills the
+     viewport and sits behind everything else. The wrapping #viewport
+     div is what Viewport (pinch/pan) transforms — the canvas inherits
+     the scale via its parent so the rider can frame the gate inside
+     the reticle without us re-rendering at higher resolution. */
+  #viewport {
+    position: fixed;
+    inset: 0;
+    transform-origin: 0 0;
+    overflow: hidden;
+    background: #000;
+  }
+  video {
+    /* Hidden — we read it through WebGL. */
+    display: none;
+  }
+  canvas#display {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  /* Signal-coloured tint. JS sets background to one of the SIGNAL.*
+     values + opacity 0.55 to let the camera read through. Drawn above
+     the viewport so it tints the live preview but below all UI text. */
+  #bg-signal {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background: transparent;
+    opacity: 0;
+    transition: background 0.18s ease, opacity 0.18s ease;
+    z-index: 1;
+  }
+
+  /* Reticle — fixed centred rectangle. Visible only in aim mode. The
+     rider pinches the camera underneath so the gate ends up inside
+     this box, then taps Confirm ROI. pointer-events:none keeps it
+     out of the way of pinch on #viewport. */
+  #reticle {
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    width: 70vw;
+    height: 50vh;
+    transform: translate(-50%, -50%);
+    /* Same red border the detector draws around the active ROI — the
+       rider learns to associate "red rectangle = where motion is being
+       watched" in aim mode and that mental model carries over the
+       moment they hit Confirm. */
+    border: 8px solid #f21a1a;
+    border-radius: 8px;
+    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.45), 0 0 32px rgba(242, 26, 26, 0.4);
+    pointer-events: none;
+    z-index: 2;
+    display: none;
+  }
+  body[data-aim="true"] #reticle { display: block; }
+  body[data-aim="true"] #hud { display: none; }
+
+  /* HUD — timer + subline + cooldown bar, centred. Positioned above
+     the signal tint and reticle. flex layout in a column so the
+     subline always sits directly under the timer regardless of
+     viewport height. */
+  #hud {
+    position: fixed;
+    inset: 0;
+    z-index: 3;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+  }
+  #timer {
+    font-family: ui-serif, Georgia, "Times New Roman", serif;
+    font-weight: 500;
+    /* Sized for the worst-case 7-character display "999.999"
+       (3 digits + dot + 3 digits). Georgia tabular-nums glyphs are
+       ~0.55 em wide × 7 chars = 3.85 em horizontally. Fitting that
+       inside ~94 vw means font-size up to 94/3.85 ≈ 24 vw; cap at
+       60 vh so a wide landscape screen isn't taller than half its
+       height. min() picks whichever ceiling kicks in first. No JS
+       size-fit — that costs measurement work every frame. */
+    font-size: min(60vh, 24vw);
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    /* Hard white outline + dark fill. Renders crisply on every signal
+       colour and doesn't smear in bright sun. paint-order:stroke fill
+       puts the stroke under the fill so glyph contours stay sharp. */
+    color: #1a1a1a;
+    -webkit-text-stroke: clamp(2px, 0.6vmin, 6px) #faf9f5;
+    paint-order: stroke fill;
+    text-shadow:
+      0 0 28px rgba(255, 255, 255, 0.55),
+      0 3px 0 rgba(0, 0, 0, 0.18);
+    letter-spacing: -0.02em;
+    max-width: 96vw;
+    overflow: hidden;
+    white-space: nowrap;
+    text-align: center;
+  }
+  #subline {
+    margin-top: 1.2vh;
+    font-size: clamp(16px, min(3.4vh, 4.6vw), 44px);
+    font-weight: 500;
+    color: #1a1a1a;
+    text-shadow: 0 0 10px rgba(255, 255, 255, 0.55);
+    min-height: 1.2em;
+    max-width: 96vw;
+    text-align: center;
+  }
+  #cooldown {
+    margin-top: 1.2vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
+  #cooldown-text {
+    font-family: ui-serif, Georgia, serif;
+    font-size: clamp(28px, 5vh, 72px);
+    font-variant-numeric: tabular-nums;
+    color: #1a1a1a;
+    text-shadow: 0 0 10px rgba(255, 255, 255, 0.55);
+  }
+  #cooldown-bar {
+    width: clamp(180px, 50vw, 600px);
+    height: 8px;
+    background: rgba(0, 0, 0, 0.18);
+    border-radius: 999px;
+    overflow: hidden;
+  }
+  #cooldown-fill {
+    height: 100%;
+    width: 100%;
+    background: rgba(26, 26, 26, 0.85);
+    border-radius: 999px;
+    transition: width 80ms linear;
+  }
+
+  /* Top bar — Start camera / Confirm ROI / Log. Always visible during
+     setup; tap-revealed during a hands-free session. */
+  #topbar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 4;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: max(env(safe-area-inset-top, 0px), 10px) 12px 10px 12px;
+    background: linear-gradient(to bottom, rgba(0,0,0,0.45), rgba(0,0,0,0));
+    transition: opacity 0.18s ease, transform 0.18s ease;
+  }
+  body[data-session="true"] #topbar:not(.revealed) {
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(-6px);
+  }
+  #topbar button {
+    font: inherit;
+    font-weight: 500;
+    color: #1a1a1a;
+    background: #f5f4ed;
+    border: 0;
+    padding: 9px 14px;
+    border-radius: 10px;
+    cursor: pointer;
+    box-shadow: 0 0 0 1px rgba(0,0,0,0.15);
+  }
+  #topbar button.primary {
+    background: #c96442;
+    color: #faf9f5;
+  }
+  #topbar button:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+  #topbar label.threshold {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: #f5f4ed;
+    background: rgba(0, 0, 0, 0.4);
+    padding: 6px 10px;
+    border-radius: 10px;
+  }
+  #topbar label.threshold input {
+    width: 110px;
+  }
+  #thr-val {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    min-width: 3.5em;
+    text-align: right;
+  }
+
+  /* Run history — last 10 runs shown bottom-right. Rendered as a
+     compact dark panel so it reads from a few metres on the bike: 12 px
+     was unreadable, 18-20 px is the floor that survives the same 10 m
+     test the timer is held to. Two columns to keep height low: rank +
+     time. Newest at the top. Best run highlighted green. */
+  #history {
+    position: fixed;
+    right: 8px;
+    bottom: 8px;
+    z-index: 4;
+    padding: 6px 10px;
+    background: rgba(0, 0, 0, 0.62);
+    border-radius: 10px;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: clamp(15px, 2.2vh, 20px);
+    color: #f5f4ed;
+    pointer-events: none;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.25;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
+  }
+  #history:empty { display: none; }
+  #history .row {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 1px 0;
+  }
+  #history .row .rank {
+    opacity: 0.55;
+    min-width: 2.4em;
+    text-align: right;
+  }
+  #history .row .time {
+    min-width: 4.6em;
+    text-align: right;
+  }
+  #history .row.best {
+    color: #4ee883;
+    font-weight: 700;
+  }
+  #history .row.best .rank {
+    opacity: 0.9;
+  }
+
+  /* Log panel + on-page error label — bench-style, hidden by default. */
+  #log {
+    position: fixed;
+    top: 56px;
+    left: 8px;
+    right: 8px;
+    max-height: 30vh;
+    margin: 0;
+    padding: 6px 10px;
+    background: rgba(0,0,0,0.78);
+    color: #f5f4ed;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 11px;
+    line-height: 1.4;
+    overflow: auto;
+    white-space: pre-wrap;
+    z-index: 5;
+    border-radius: 8px;
+  }
+  #err {
+    position: fixed;
+    bottom: 6px;
+    left: 8px;
+    right: 8px;
+    z-index: 5;
+    color: #ffd1c2;
+    background: rgba(80, 12, 0, 0.85);
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    text-align: center;
+    pointer-events: none;
+  }
+  #err:empty { display: none; }
+
+  /* Debug overlay — visible by default (the rider needs FPS, motion
+     ratio, and threshold readouts to tune). Hide with ?debug=0.
+     Stretches across the viewport so the dark band is full-width — the
+     earlier max-width:60vw left an awkward stub of camera image
+     showing through under the right edge. The history panel sits ON
+     TOP of the right edge of this band; both stay readable. */
+  #debug {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 3;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.45;
+    color: #f5f4ed;
+    background: rgba(0, 0, 0, 0.62);
+    padding: 6px 10px max(env(safe-area-inset-bottom, 0px), 6px) 10px;
+    pointer-events: none;
+    white-space: pre;
+    display: none;
+  }
+  body[data-debug="true"] #debug { display: block; }
+  body[data-debug="true"] #history { bottom: 56px; }
+
+  /* Build stamp — top-right corner, small mono. Helps the user
+     identify which version a screenshot is from. CI rewrites
+     build-info.js with version/commit/builtAt; locally we substitute
+     a fresh page-load timestamp so dev iterations are still
+     distinguishable from each other on a screenshot. */
+  #build-stamp {
+    position: fixed;
+    top: max(env(safe-area-inset-top, 0px), 6px);
+    right: 8px;
+    z-index: 5;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 11px;
+    color: rgba(245, 244, 237, 0.78);
+    background: rgba(0, 0, 0, 0.45);
+    padding: 3px 8px;
+    border-radius: 6px;
+    pointer-events: none;
+    letter-spacing: 0.02em;
+  }
+</style>
+</head>
+<body>
+  <!-- Live camera preview drawn by webgl-detector.drawDisplay(). -->
+  <div id="viewport">
+    <video id="cam" playsinline autoplay muted></video>
+    <canvas id="display"></canvas>
+  </div>
+
+  <!-- Phase-driven background tint (orange/red/green/parchment/ivory). -->
+  <div id="bg-signal"></div>
+
+  <!-- Aim-mode reticle. Visible only while body[data-aim="true"]. -->
+  <div id="reticle" aria-hidden="true"></div>
+
+  <!-- HUD: huge timer + subline + cooldown countdown. -->
+  <div id="hud">
+    <div id="timer">0.000</div>
+    <div id="subline"></div>
+    <div id="cooldown" hidden>
+      <div id="cooldown-text">2.5s</div>
+      <div id="cooldown-bar"><div id="cooldown-fill"></div></div>
+    </div>
+  </div>
+
+  <header id="topbar">
+    <button id="btn-start-camera" type="button" class="primary">Start camera</button>
+    <button id="btn-set-roi" type="button" disabled>Confirm ROI</button>
+    <!-- Drops the current ROI and re-enters aim mode so the rider can
+         re-pinch the camera and pick a new region without restarting
+         the camera or the page. Disabled until at least one ROI has
+         been confirmed. -->
+    <button id="btn-reset-roi" type="button" disabled>Reset ROI</button>
+    <label class="threshold">thr
+      <input id="threshold" type="range" min="0.05" max="0.80" step="0.01" value="0.20">
+      <span id="thr-val">0.20</span>
+    </label>
+    <button id="btn-toggle-log" type="button">Log</button>
+  </header>
+  <pre id="log" hidden></pre>
+  <span id="err"></span>
+  <div id="build-stamp">—</div>
+
+  <!-- Last 10 finished runs, most recent at top. Hidden until storage has
+       at least one entry. Persisted to localStorage so a reload doesn't
+       lose the rider's session results. -->
+  <div id="history"></div>
+
+  <div id="debug">—</div>
+
+  <script type="module" src="./app-webgl.js"></script>
+</body>
+</html>
