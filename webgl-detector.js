@@ -34,9 +34,15 @@ const COOLDOWN_SECONDS = 3;
 const FBO_SIZE = 256;                            // power-of-two for mipmap reduction
 const FBO_MIP_LEVEL = Math.log2(FBO_SIZE) | 0;   // 8 → 1×1 pixel level
 
+// Explicit attribute locations — without these the GLSL compiler is
+// free to assign aPos and aUv in either order, in which case UV would
+// receive the position bytes and we'd sample garbage at clip-space
+// coordinates (which manifests as a stable ~50% diff in stillness even
+// in a perfectly still scene). The previous version of this file did
+// not pin locations and exhibited exactly that bug.
 const VS = `#version 300 es
-in vec2 aPos;
-in vec2 aUv;
+layout(location=0) in vec2 aPos;
+layout(location=1) in vec2 aUv;
 out vec2 vUv;
 void main() {
   gl_Position = vec4(aPos, 0.0, 1.0);
@@ -104,6 +110,15 @@ export class Detector {
     this._uploadW = 0;
     this._uploadH = 0;
 
+    // Per-frame caching. app.js calls process() and refreshReferenceSafely()
+    // back-to-back on the same video frame in some states; without these
+    // we'd re-upload + re-crop + re-readPixels twice. Keyed by
+    // video.currentTime, which the spec advances on every video frame.
+    this._lastUploadAt = -1;
+    this._lastCropAt = -1;
+    this._motionRatioAt = -1;
+    this._stillnessRatioAt = -1;
+
     this._initGl();
   }
 
@@ -147,8 +162,11 @@ export class Detector {
       // First observation — no comparison possible. Match canvas
       // detector's "always returns 1 on the first call" semantics.
       ratio = 1;
+    } else if (this._stillnessRatioAt === this._lastUploadAt) {
+      ratio = this._prevStillnessRatio;
     } else {
       ratio = this._diffCroppedAgainst(this._texPrev, this.pixelDiffThreshold);
+      this._stillnessRatioAt = this._lastUploadAt;
     }
     this._copyCroppedTo(this._fboPrev);
     this._hasPrevFrame = true;
@@ -192,10 +210,26 @@ export class Detector {
 
     this._uploadCurrent(video);
     this._cropCurrent();
-    const motion = this._diffCroppedAgainst(this._texRef, this.threshold);
-    const stillness = this._hasPrevFrame
-      ? this._diffCroppedAgainst(this._texPrev, this.pixelDiffThreshold)
-      : 1;
+
+    let motion;
+    if (this._motionRatioAt === this._lastUploadAt) {
+      motion = this._lastRatio;
+    } else {
+      motion = this._diffCroppedAgainst(this._texRef, this.threshold);
+      this._lastRatio = motion;
+      this._motionRatioAt = this._lastUploadAt;
+    }
+
+    let stillness;
+    if (!this._hasPrevFrame) {
+      stillness = 1;
+    } else if (this._stillnessRatioAt === this._lastUploadAt) {
+      stillness = this._prevStillnessRatio;
+    } else {
+      stillness = this._diffCroppedAgainst(this._texPrev, this.pixelDiffThreshold);
+      this._prevStillnessRatio = stillness;
+      this._stillnessRatioAt = this._lastUploadAt;
+    }
 
     if (motion < driftRatioThreshold) {
       this._lastReferenceRefreshState = 'idle';
@@ -250,8 +284,14 @@ export class Detector {
 
     if (!this._hasReference) return false;
 
-    const ratio = this._diffCroppedAgainst(this._texRef, this.threshold);
-    this._lastRatio = ratio;
+    let ratio;
+    if (this._motionRatioAt === this._lastUploadAt) {
+      ratio = this._lastRatio;
+    } else {
+      ratio = this._diffCroppedAgainst(this._texRef, this.threshold);
+      this._lastRatio = ratio;
+      this._motionRatioAt = this._lastUploadAt;
+    }
 
     if (ratio < this.threshold) {
       this._clearSinceTrigger = true;
@@ -367,11 +407,15 @@ export class Detector {
   }
 
   _makeVideoTex() {
+    // NEAREST so the ROI crop pass doesn't blend across pixel
+    // boundaries — LINEAR + sub-pixel UVs would inject phantom
+    // differences between consecutive frames and inflate stillness
+    // ratios for a static scene.
     const gl = this.gl;
     const t = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, t);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     return t;
@@ -382,8 +426,12 @@ export class Detector {
     const t = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, t);
     gl.texStorage2D(gl.TEXTURE_2D, mip ? FBO_MIP_LEVEL + 1 : 1, gl.RGBA8, FBO_SIZE, FBO_SIZE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, mip ? gl.LINEAR_MIPMAP_NEAREST : gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    // FBO-shaped textures are sampled at fullscreen 0..1 UVs — exactly
+    // pixel-aligned — so NEAREST is both correct and cheaper. The
+    // mipmapped motion texture keeps LINEAR_MIPMAP_NEAREST for the
+    // generateMipmap reduction averaging.
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, mip ? gl.LINEAR_MIPMAP_NEAREST : gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     return t;
@@ -416,17 +464,28 @@ export class Detector {
   }
 
   _uploadCurrent(video) {
+    // Skip if this exact video frame was already uploaded — app.js can
+    // call us multiple times per frame (process + refreshReferenceSafely).
+    const ct = video.currentTime;
+    if (ct === this._lastUploadAt) return;
     const gl = this.gl;
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
     gl.bindTexture(gl.TEXTURE_2D, this._texCur);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
     this._uploadW = video.videoWidth;
     this._uploadH = video.videoHeight;
+    this._lastUploadAt = ct;
+    // New frame uploaded — invalidate downstream caches so the next
+    // crop / diff actually re-runs.
+    this._lastCropAt = -1;
+    this._motionRatioAt = -1;
+    this._stillnessRatioAt = -1;
   }
 
   // Crop the ROI sub-rect of _texCur into _texCurCropped (FBO_SIZE²).
   // After this, every subsequent pass samples at fullscreen 0..1 UV.
   _cropCurrent() {
+    if (this._lastCropAt === this._lastUploadAt) return;
     const gl = this.gl;
     const uvL = this.roi.x / this._uploadW;
     const uvR = (this.roi.x + this.roi.w) / this._uploadW;
@@ -442,6 +501,7 @@ export class Detector {
     gl.bindTexture(gl.TEXTURE_2D, this._texCur);
     gl.uniform1i(this._locCopy.a, 0);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    this._lastCropAt = this._lastUploadAt;
   }
 
   // Diff _texCurCropped against another fullscreen FBO texture, reduce,
