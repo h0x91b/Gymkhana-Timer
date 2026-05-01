@@ -1,83 +1,285 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#f5f4ed" />
-  <title>Gymkhana Timer · WebGL</title>
-  <link rel="manifest" href="./manifest.json" />
-  <link rel="icon" href="./icons/icon-192.png" />
-  <link rel="stylesheet" href="./style.css" />
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Gymkhana Timer · WebGL</title>
+<style>
+  /*
+   * webgl-app.html — production gymkhana timer running on the WebGL2
+   * pipeline that webgl-bench.html proved out at a stable 60 FPS.
+   *
+   * UI is intentionally a clean rebuild — not a copy of canvas-app.html.
+   * The only invariants are the ones that matter at 10 m on a tripod:
+   *   (1) huge centred timer in serif tabular numerals,
+   *   (2) a saturated signal-coloured tint that tells the rider what
+   *       phase we're in (orange = wait, green = ready, parchment =
+   *       running, ivory = finished flash, red = stuck observing).
+   * Everything else (controls, log, debug) is incidental chrome that
+   * must not compete with the timer for attention.
+   */
+
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    overflow: hidden;
+    background: #0b0b0c;
+    color: #f5f4ed;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+  }
+
+  /* The WebGL canvas is the visible camera preview. It fills the
+     viewport and sits behind everything else. The wrapping #viewport
+     div is what Viewport (pinch/pan) transforms — the canvas inherits
+     the scale via its parent so the rider can frame the gate inside
+     the reticle without us re-rendering at higher resolution. */
+  #viewport {
+    position: fixed;
+    inset: 0;
+    transform-origin: 0 0;
+    overflow: hidden;
+    background: #000;
+  }
+  video {
+    /* Hidden — we read it through WebGL. */
+    display: none;
+  }
+  canvas#display {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  /* Signal-coloured tint. JS sets background to one of the SIGNAL.*
+     values + opacity 0.55 to let the camera read through. Drawn above
+     the viewport so it tints the live preview but below all UI text. */
+  #bg-signal {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background: transparent;
+    opacity: 0;
+    transition: background 0.18s ease, opacity 0.18s ease;
+    z-index: 1;
+  }
+
+  /* Reticle — fixed centred rectangle. Visible only in aim mode. The
+     rider pinches the camera underneath so the gate ends up inside
+     this box, then taps Confirm ROI. pointer-events:none keeps it
+     out of the way of pinch on #viewport. */
+  #reticle {
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    width: 70vw;
+    height: 50vh;
+    transform: translate(-50%, -50%);
+    border: 3px solid #00d851;
+    border-radius: 8px;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4), 0 0 28px rgba(0, 216, 81, 0.4);
+    pointer-events: none;
+    z-index: 2;
+    display: none;
+  }
+  body[data-aim="true"] #reticle { display: block; }
+  body[data-aim="true"] #hud { display: none; }
+
+  /* HUD — timer + subline + cooldown bar, centred. Positioned above
+     the signal tint and reticle. flex layout in a column so the
+     subline always sits directly under the timer regardless of
+     viewport height. */
+  #hud {
+    position: fixed;
+    inset: 0;
+    z-index: 3;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+  }
+  #timer {
+    font-family: ui-serif, Georgia, "Times New Roman", serif;
+    font-weight: 500;
+    font-size: clamp(160px, 38vh, 480px);
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    color: #1a1a1a;
+    text-shadow:
+      0 0 18px rgba(255, 255, 255, 0.45),
+      0 2px 0 rgba(255, 255, 255, 0.25);
+    letter-spacing: -0.02em;
+  }
+  #subline {
+    margin-top: 1.2vh;
+    font-size: clamp(20px, 3.6vh, 44px);
+    font-weight: 500;
+    color: #1a1a1a;
+    text-shadow: 0 0 10px rgba(255, 255, 255, 0.55);
+    min-height: 1.2em;
+  }
+  #cooldown {
+    margin-top: 1.2vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
+  #cooldown-text {
+    font-family: ui-serif, Georgia, serif;
+    font-size: clamp(28px, 5vh, 72px);
+    font-variant-numeric: tabular-nums;
+    color: #1a1a1a;
+    text-shadow: 0 0 10px rgba(255, 255, 255, 0.55);
+  }
+  #cooldown-bar {
+    width: clamp(180px, 50vw, 600px);
+    height: 8px;
+    background: rgba(0, 0, 0, 0.18);
+    border-radius: 999px;
+    overflow: hidden;
+  }
+  #cooldown-fill {
+    height: 100%;
+    width: 100%;
+    background: rgba(26, 26, 26, 0.85);
+    border-radius: 999px;
+    transition: width 80ms linear;
+  }
+
+  /* Top bar — Start camera / Confirm ROI / Log. Always visible during
+     setup; tap-revealed during a hands-free session. */
+  #topbar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 4;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: max(env(safe-area-inset-top, 0px), 10px) 12px 10px 12px;
+    background: linear-gradient(to bottom, rgba(0,0,0,0.45), rgba(0,0,0,0));
+    transition: opacity 0.18s ease, transform 0.18s ease;
+  }
+  body[data-session="true"] #topbar:not(.revealed) {
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(-6px);
+  }
+  #topbar button {
+    font: inherit;
+    font-weight: 500;
+    color: #1a1a1a;
+    background: #f5f4ed;
+    border: 0;
+    padding: 9px 14px;
+    border-radius: 10px;
+    cursor: pointer;
+    box-shadow: 0 0 0 1px rgba(0,0,0,0.15);
+  }
+  #topbar button.primary {
+    background: #c96442;
+    color: #faf9f5;
+  }
+  #topbar button:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+
+  /* Log panel + on-page error label — bench-style, hidden by default. */
+  #log {
+    position: fixed;
+    top: 56px;
+    left: 8px;
+    right: 8px;
+    max-height: 30vh;
+    margin: 0;
+    padding: 6px 10px;
+    background: rgba(0,0,0,0.78);
+    color: #f5f4ed;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 11px;
+    line-height: 1.4;
+    overflow: auto;
+    white-space: pre-wrap;
+    z-index: 5;
+    border-radius: 8px;
+  }
+  #err {
+    position: fixed;
+    bottom: 6px;
+    left: 8px;
+    right: 8px;
+    z-index: 5;
+    color: #ffd1c2;
+    background: rgba(80, 12, 0, 0.85);
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    text-align: center;
+    pointer-events: none;
+  }
+  #err:empty { display: none; }
+
+  /* Debug overlay — opt-in via ?debug=1. Tucked at the bottom so it
+     never collides with the timer. */
+  #debug {
+    position: fixed;
+    left: 8px;
+    bottom: 8px;
+    z-index: 4;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 11px;
+    color: #f5f4ed;
+    background: rgba(0,0,0,0.55);
+    padding: 4px 8px;
+    border-radius: 6px;
+    pointer-events: none;
+    display: none;
+  }
+  body[data-debug="true"] #debug { display: block; }
+</style>
 </head>
 <body>
-  <main id="stage">
-    <div id="build-stamp" class="build-stamp">local · dev</div>
-    <div id="viewport">
-      <video id="cam" playsinline autoplay muted></video>
-      <canvas id="overlay"></canvas>
-    </div>
-    <canvas id="roi-view" hidden></canvas>
+  <!-- Live camera preview drawn by webgl-detector.drawDisplay(). -->
+  <div id="viewport">
+    <video id="cam" playsinline autoplay muted></video>
+    <canvas id="display"></canvas>
+  </div>
 
-    <!-- Aim reticle: fixed green square at screen center. During aim mode
-         (body[data-aiming="true"]) this is the WYSIWYG ROI preview — whatever
-         lives inside the square at the moment the rider taps Confirm becomes
-         the detector's ROI. pointer-events:none so it never fights the pinch
-         gesture that moves the video underneath. See decisions/010. -->
-    <div id="reticle" class="reticle" aria-hidden="true"></div>
-    <div id="gesture-hint" class="gesture-hint" hidden data-i18n-key="ui.gestureHint">Pinch to place the gate inside the square · Two-finger drag to pan · Tap Confirm ROI when ready</div>
+  <!-- Phase-driven background tint (orange/red/green/parchment/ivory). -->
+  <div id="bg-signal"></div>
 
-    <div id="hud">
-      <div id="timer" class="timer">0.000</div>
-      <!-- Secondary sub-line under the big timer. Renders (depending on phase):
-             ARMED    → "Ready to go"
-             RUNNING  → "Previous: 42.35s"
-             OBSERVING→ "Waiting for clear frame…" (or error variant past 20s)
-           During COOLDOWN it's hidden — the cooldown pill below (draining
-           progress bar + countdown) is the canonical indicator. -->
-      <div id="timer-subline" class="timer-subline" hidden></div>
-      <!-- Cooldown pill: repurposed for the session COOLDOWN countdown,
-           NOT the detector's post-trigger debounce. The progress bar drains
-           visually so the rider can gauge remaining wait without reading
-           the number. Hidden outside COOLDOWN. -->
-      <div id="cooldown" class="cooldown" hidden>
-        <div id="cooldown-text" class="cooldown-text"></div>
-        <div class="cooldown-bar"><div id="cooldown-fill" class="cooldown-fill"></div></div>
-      </div>
-      <!-- Last 5 runs from localStorage. Fills the empty space below the
-           timer so the rider can read recent results at a glance without
-           opening a history screen. Hidden until there's at least one run. -->
-      <div id="run-history" class="run-history" hidden></div>
-      <!-- Debug row: FPS + status + detector internals on one line. Hidden
-           unless the Debug toggle is on. Replaces the earlier stack of
-           separate pills and removes the vestigial version-badge `—` blob. -->
-      <div id="debug-row" class="debug-row">
-        <div id="status" class="status" data-status="IDLE" data-i18n-key="status.idle">IDLE</div>
-        <div id="fps-readout" class="fps-readout" hidden>— FPS · ±— ms</div>
-        <div id="debug" class="debug"></div>
-      </div>
-    </div>
+  <!-- Aim-mode reticle. Visible only while body[data-aim="true"]. -->
+  <div id="reticle" aria-hidden="true"></div>
 
-    <div id="controls" class="controls">
-      <button id="btn-start-camera" type="button" data-i18n-key="ui.startCamera">Start camera</button>
-      <button id="btn-set-roi" type="button" disabled data-i18n-key="ui.confirmRoi">Confirm ROI</button>
-      <!-- Single lifecycle button: "Start session" when idle, "Stop session"
-           while the hands-free loop is running. See app.js refreshSessionButton(). -->
-      <button id="btn-session" type="button" class="primary" disabled data-i18n-key="ui.startSession">Start session</button>
-      <button id="btn-update" type="button" class="update" hidden data-i18n-key="ui.update">Update</button>
-      <label class="threshold">
-        <span data-i18n-key="ui.threshold">Threshold</span>
-        <input id="threshold" type="range" min="0.01" max="0.5" step="0.01" value="0.35" />
-      </label>
-      <label class="debug-toggle">
-        <input id="debug-toggle" type="checkbox" checked />
-        <span data-i18n-key="ui.debug">Debug</span>
-      </label>
-      <label class="lang-select">
-        <span data-i18n-key="ui.language">Language</span>
-        <select id="lang-select"></select>
-      </label>
+  <!-- HUD: huge timer + subline + cooldown countdown. -->
+  <div id="hud">
+    <div id="timer">0.000</div>
+    <div id="subline"></div>
+    <div id="cooldown" hidden>
+      <div id="cooldown-text">2.5s</div>
+      <div id="cooldown-bar"><div id="cooldown-fill"></div></div>
     </div>
-  </main>
+  </div>
+
+  <header id="topbar">
+    <button id="btn-start-camera" type="button" class="primary">Start camera</button>
+    <button id="btn-set-roi" type="button" disabled>Confirm ROI</button>
+    <button id="btn-toggle-log" type="button">Log</button>
+  </header>
+  <pre id="log" hidden></pre>
+  <span id="err"></span>
+  <div id="debug">—</div>
 
   <script type="module" src="./app-webgl.js"></script>
 </body>
