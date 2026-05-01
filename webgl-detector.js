@@ -258,6 +258,20 @@ export class WebglDetector {
   captureReference() { this._captureRefPending = true; }
   hasReference() { return this._hasRef; }
 
+  // Forget the captured reference. Called when the active ROI changes
+  // (Reset ROI button) so the next OBSERVING re-captures against the
+  // new region rather than comparing the new crop to a stale ref from
+  // the previous ROI — which would otherwise look like a giant motion
+  // event the moment the new ROI gets sampled.
+  resetReferenceForRoiChange() {
+    this._hasRef = false;
+    this._captureRefPending = false;
+    this._lastMotion = 0;
+    this._lastDrift = 0;
+    this._clearSinceTrigger = true;
+    this._lastTriggerAt = -Infinity;
+  }
+
   cooldownRemaining(mt) {
     return Math.max(0, (this._lastTriggerAt + this._cooldownSeconds) - mt);
   }
@@ -285,14 +299,23 @@ export class WebglDetector {
     const VH = video.videoHeight;
     const sameFrame = mediaTime === this._lastProcessedMediaTime;
 
-    // ROI in UVs. UNPACK_FLIP_Y_WEBGL flips on upload, so UV (0,0) is
-    // the TOP-LEFT of the camera image — matching how we naturally
-    // address ROI pixels.
+    // ROI in UVs. CRITICAL: UNPACK_FLIP_Y_WEBGL flips the texture rows
+    // on upload, so the texture's V=0 is the BOTTOM of the source video
+    // and V=1 is the TOP. To sample video pixel y=r.y we therefore need
+    // texture V = 1 - r.y/VH (and similarly for r.y+r.h).
+    //
+    // Without this flip, FS_COPY ends up cropping a vertically-mirrored
+    // region from somewhere else in the frame — the detector then
+    // watches a slice that doesn't correspond to the red border drawn
+    // by FS_DISPLAY, which DOES use the 1-y/VH convention. Symptom:
+    // motion outside the visible ROI seemingly triggers; motion inside
+    // the visible ROI is hit-or-miss. Vertical-only — the X axis is
+    // unaffected by FLIP_Y.
     const r = this._roi;
     const uvL = r.x / VW;
     const uvR = (r.x + r.w) / VW;
-    const uvT = r.y / VH;
-    const uvB = (r.y + r.h) / VH;
+    const uvT = 1 - r.y / VH;            // top of ROI (smaller video y) → larger v
+    const uvB = 1 - (r.y + r.h) / VH;    // bottom of ROI → smaller v
 
     if (!sameFrame) {
       // STAGE 1 — upload current camera frame.

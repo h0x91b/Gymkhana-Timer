@@ -138,6 +138,7 @@ const els = {
   topbar:       document.getElementById('topbar'),
   btnStart:     document.getElementById('btn-start-camera'),
   btnSetRoi:    document.getElementById('btn-set-roi'),
+  btnResetRoi:  document.getElementById('btn-reset-roi'),
   threshold:    document.getElementById('threshold'),
   thrVal:       document.getElementById('thr-val'),
   history:      document.getElementById('history'),
@@ -520,8 +521,8 @@ function commitRoiFromReticle() {
   // Read viewport transform BEFORE viewport.reset() — otherwise we'd
   // always compute "full-frame ROI at z=1" regardless of how the rider
   // pinched. The reticle is in screen coords; (sx-tx)/z is the
-  // pre-transform CSS point on #viewport, then mapCssRoiToVideoRoi
-  // does the object-fit:cover conversion to video pixels.
+  // pre-transform CSS point on #viewport. mapCssRoiToVideoRoi then
+  // does the linear (fill-stretch) conversion to video pixels.
   const W = viewport.intrinsicWidth();
   const H = viewport.intrinsicHeight();
   const z = viewport.z;
@@ -539,10 +540,35 @@ function commitRoiFromReticle() {
   if (sessionActive) stopSession();
   exitAimMode();
   viewport.reset();
+  // Detach pinch/pan — once the ROI is locked, the camera image must
+  // stay static. Allowing zoom/pan now would silently shift what the
+  // rider sees relative to what the detector samples (the detector
+  // works in video-pixel coords; CSS-transforming the canvas afterwards
+  // doesn't change what's sampled, only what's displayed). Re-attaches
+  // when the rider hits Reset ROI.
+  viewport.detach();
   currentRoi = videoRoi;
   detector.setRoi(videoRoi);
   detector.setThreshold(currentThreshold);
+  els.btnResetRoi.disabled = false;
   startSession();
+}
+
+function resetRoi() {
+  // Drop the active ROI, re-enter aim mode, re-arm pinch. The user
+  // taps this when they want to re-frame without restarting the
+  // camera. Idempotent — safe to call when no ROI is set.
+  if (sessionActive) stopSession();
+  currentRoi = null;
+  detector.setRoi(null);
+  // Detector clears its reference so the next OBSERVING after a
+  // re-confirm builds a clean ref against the new ROI's contents.
+  detector.resetReferenceForRoiChange();
+  els.btnResetRoi.disabled = true;
+  els.btnSetRoi.disabled = false;
+  enterAimMode();
+  viewport.attach();
+  logLine('ROI reset — re-aim mode');
 }
 
 /* ------------------------------------------------------------------ *
@@ -604,6 +630,7 @@ async function startCamera() {
 }
 els.btnStart.addEventListener('click', startCamera);
 els.btnSetRoi.addEventListener('click', commitRoiFromReticle);
+els.btnResetRoi.addEventListener('click', resetRoi);
 
 /* ------------------------------------------------------------------ *
  * Frame loop                                                         *

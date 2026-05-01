@@ -387,6 +387,11 @@
   <header id="topbar">
     <button id="btn-start-camera" type="button" class="primary">Start camera</button>
     <button id="btn-set-roi" type="button" disabled>Confirm ROI</button>
+    <!-- Drops the current ROI and re-enters aim mode so the rider can
+         re-pinch the camera and pick a new region without restarting
+         the camera or the page. Disabled until at least one ROI has
+         been confirmed. -->
+    <button id="btn-reset-roi" type="button" disabled>Reset ROI</button>
     <label class="threshold">thr
       <input id="threshold" type="range" min="0.05" max="0.80" step="0.01" value="0.20">
       <span id="thr-val">0.20</span>
