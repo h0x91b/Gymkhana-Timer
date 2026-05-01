@@ -80,9 +80,13 @@
     width: 70vw;
     height: 50vh;
     transform: translate(-50%, -50%);
-    border: 3px solid #00d851;
+    /* Same red border the detector draws around the active ROI — the
+       rider learns to associate "red rectangle = where motion is being
+       watched" in aim mode and that mental model carries over the
+       moment they hit Confirm. */
+    border: 8px solid #f21a1a;
     border-radius: 8px;
-    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4), 0 0 28px rgba(0, 216, 81, 0.4);
+    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.45), 0 0 32px rgba(242, 26, 26, 0.4);
     pointer-events: none;
     z-index: 2;
     display: none;
@@ -107,21 +111,25 @@
   #timer {
     font-family: ui-serif, Georgia, "Times New Roman", serif;
     font-weight: 500;
-    /* Size has to fit BOTH height and width — on a vertical phone the
-       width is what limits us. "42.123" is six tabular-num glyphs, each
-       roughly 0.55em wide, so the text occupies ~3.3em horizontally.
-       min(46vh, 22vw) keeps the digits inside ~72% of the narrowest
-       dimension on every realistic aspect ratio (portrait phone,
-       landscape desktop, square tablet). Without the vw clamp the
-       digits overflow and only the middle two are visible — exactly
-       the bug the user reported. */
-    font-size: min(46vh, 22vw);
+    /* Sized for the worst-case 7-character display "999.999"
+       (3 digits + dot + 3 digits). Georgia tabular-nums glyphs are
+       ~0.55 em wide × 7 chars = 3.85 em horizontally. Fitting that
+       inside ~94 vw means font-size up to 94/3.85 ≈ 24 vw; cap at
+       60 vh so a wide landscape screen isn't taller than half its
+       height. min() picks whichever ceiling kicks in first. No JS
+       size-fit — that costs measurement work every frame. */
+    font-size: min(60vh, 24vw);
     line-height: 1;
     font-variant-numeric: tabular-nums;
+    /* Hard white outline + dark fill. Renders crisply on every signal
+       colour and doesn't smear in bright sun. paint-order:stroke fill
+       puts the stroke under the fill so glyph contours stay sharp. */
     color: #1a1a1a;
+    -webkit-text-stroke: clamp(2px, 0.6vmin, 6px) #faf9f5;
+    paint-order: stroke fill;
     text-shadow:
-      0 0 18px rgba(255, 255, 255, 0.45),
-      0 2px 0 rgba(255, 255, 255, 0.25);
+      0 0 28px rgba(255, 255, 255, 0.55),
+      0 3px 0 rgba(0, 0, 0, 0.18);
     letter-spacing: -0.02em;
     max-width: 96vw;
     overflow: hidden;
@@ -226,35 +234,49 @@
     text-align: right;
   }
 
-  /* Run history — last 10 runs shown bottom-right while a session is
-     live. Compact, monospaced so the digits line up; the most recent
-     run sits on top. Hidden until at least one run has finished. */
+  /* Run history — last 10 runs shown bottom-right. Rendered as a
+     compact dark panel so it reads from a few metres on the bike: 12 px
+     was unreadable, 18-20 px is the floor that survives the same 10 m
+     test the timer is held to. Two columns to keep height low: rank +
+     time. Newest at the top. Best run highlighted green. */
   #history {
     position: fixed;
     right: 8px;
     bottom: 8px;
     z-index: 4;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
+    padding: 6px 10px;
+    background: rgba(0, 0, 0, 0.62);
+    border-radius: 10px;
     font-family: ui-monospace, Menlo, Consolas, monospace;
-    font-size: 12px;
-    color: #1a1a1a;
+    font-size: clamp(15px, 2.2vh, 20px);
+    color: #f5f4ed;
     pointer-events: none;
-    text-align: right;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.25;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
   }
   #history:empty { display: none; }
   #history .row {
-    background: rgba(245, 244, 237, 0.78);
-    padding: 2px 8px;
-    border-radius: 6px;
-    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.15);
-    font-variant-numeric: tabular-nums;
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 1px 0;
+  }
+  #history .row .rank {
+    opacity: 0.55;
+    min-width: 2.4em;
+    text-align: right;
+  }
+  #history .row .time {
+    min-width: 4.6em;
+    text-align: right;
   }
   #history .row.best {
-    background: rgba(0, 216, 81, 0.85);
-    color: #0b0b0c;
-    font-weight: 600;
+    color: #4ee883;
+    font-weight: 700;
+  }
+  #history .row.best .rank {
+    opacity: 0.9;
   }
 
   /* Log panel + on-page error label — bench-style, hidden by default. */
@@ -294,25 +316,49 @@
   #err:empty { display: none; }
 
   /* Debug overlay — visible by default (the rider needs FPS, motion
-     ratio, and threshold readouts to tune). Hide with ?debug=0. */
+     ratio, and threshold readouts to tune). Hide with ?debug=0.
+     Stretches across the viewport so the dark band is full-width — the
+     earlier max-width:60vw left an awkward stub of camera image
+     showing through under the right edge. The history panel sits ON
+     TOP of the right edge of this band; both stay readable. */
   #debug {
     position: fixed;
-    left: 8px;
-    bottom: 8px;
-    z-index: 4;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 3;
     font-family: ui-monospace, Menlo, Consolas, monospace;
     font-size: 12px;
     line-height: 1.45;
     color: #f5f4ed;
-    background: rgba(0,0,0,0.62);
-    padding: 6px 10px;
-    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.62);
+    padding: 6px 10px max(env(safe-area-inset-bottom, 0px), 6px) 10px;
     pointer-events: none;
-    max-width: 60vw;
     white-space: pre;
     display: none;
   }
   body[data-debug="true"] #debug { display: block; }
+  body[data-debug="true"] #history { bottom: 56px; }
+
+  /* Build stamp — top-right corner, small mono. Helps the user
+     identify which version a screenshot is from. CI rewrites
+     build-info.js with version/commit/builtAt; locally we substitute
+     a fresh page-load timestamp so dev iterations are still
+     distinguishable from each other on a screenshot. */
+  #build-stamp {
+    position: fixed;
+    top: max(env(safe-area-inset-top, 0px), 6px);
+    right: 8px;
+    z-index: 5;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 11px;
+    color: rgba(245, 244, 237, 0.78);
+    background: rgba(0, 0, 0, 0.45);
+    padding: 3px 8px;
+    border-radius: 6px;
+    pointer-events: none;
+    letter-spacing: 0.02em;
+  }
 </style>
 </head>
 <body>
@@ -349,6 +395,7 @@
   </header>
   <pre id="log" hidden></pre>
   <span id="err"></span>
+  <div id="build-stamp">—</div>
 
   <!-- Last 10 finished runs, most recent at top. Hidden until storage has
        at least one entry. Persisted to localStorage so a reload doesn't

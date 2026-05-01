@@ -105,13 +105,15 @@ void main() {
   outColor = vec4(moved, diff * 0.5 + 0.5, la, 1.0);
 }`;
 
-// Display: full-screen video with a clearly visible green outline over
-// the ROI box so the rider always knows where the detector is actually
-// looking. Earlier we relied on a soft 18% tint inside the ROI which
-// disappeared against bright outdoor backgrounds — a solid border is
-// the only legible cue at 10 m. Border thickness is computed in screen
-// space via fwidth() so it stays a constant ~3 px regardless of
-// resolution / DPR.
+// Display: full-screen video with a thick red outline around the ROI.
+// Red because (a) it doesn't collide with the green ARMED background,
+// (b) it reads as a clear "this is the active detection zone" cue
+// rather than something neutral. fwidth() is multiplied by ~10 to give
+// a chunky ~10 px border that's visible on a phone clamped to a tripod
+// from across the lot. Earlier 2-3 px green border was too thin to
+// notice in practice. A faint red-tinted halo just outside the inner
+// edge fattens the perceived line further without losing the camera
+// detail inside.
 const FS_DISPLAY = `#version 300 es
 precision highp float;
 uniform sampler2D uTex;
@@ -120,19 +122,22 @@ in vec2 vUv;
 out vec4 outColor;
 void main() {
   vec3 c = texture(uTex, vUv).rgb;
-  vec2 px = fwidth(vUv) * 2.5;
+  // Border thickness in UV — fwidth gives "1 pixel in UV". Multiply by
+  // ~10 for a substantial line; px.x and px.y differ on non-square
+  // canvases so the border stays visually consistent on both axes.
+  vec2 px = fwidth(vUv) * 10.0;
   bool inside = vUv.x >= uRoi.x && vUv.x <= uRoi.z
              && vUv.y >= uRoi.y && vUv.y <= uRoi.w;
   bool insideInner = vUv.x >= uRoi.x + px.x && vUv.x <= uRoi.z - px.x
                   && vUv.y >= uRoi.y + px.y && vUv.y <= uRoi.w - px.y;
   if (inside && !insideInner) {
-    // Solid green outline — drop shadow on each side via a slight darken
-    // band one px out so the border reads even on a green background.
-    c = vec3(0.05, 0.85, 0.32);
+    // Saturated red border. Slight darken at the corners is acceptable
+    // — we want a brick-coloured "frame" around the ROI, not a glow.
+    c = vec3(0.95, 0.10, 0.10);
   } else if (inside) {
-    // Faint tint inside so the rider feels the ROI as a "lit" region
-    // even when their eye isn't on the border.
-    c = mix(c, vec3(0.2, 0.9, 0.4), 0.10);
+    // Light red tint inside so the boundary band has a halo on the
+    // inside edge as well — doubles the perceived border width.
+    c = mix(c, vec3(0.95, 0.20, 0.18), 0.12);
   }
   outColor = vec4(c, 1.0);
 }`;

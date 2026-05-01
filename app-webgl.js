@@ -22,6 +22,7 @@
 import { Viewport } from './viewport.js';
 import { Timer } from './timer.js';
 import { WebglDetector } from './webgl-detector.js';
+import { BUILD_INFO } from './build-info.js';
 
 /* ------------------------------------------------------------------ *
  * URL parameters and tunables                                        *
@@ -141,6 +142,7 @@ const els = {
   thrVal:       document.getElementById('thr-val'),
   history:      document.getElementById('history'),
   debug:        document.getElementById('debug'),
+  buildStamp:   document.getElementById('build-stamp'),
 };
 
 if (DEBUG) document.body.dataset.debug = 'true';
@@ -704,12 +706,24 @@ function renderHistory() {
   // tell at a glance whether the most recent run beat their PB.
   let best = Infinity;
   for (const r of runs) if (r.elapsed < best) best = r.elapsed;
-  // Render newest at the top — the rider's eye lands there first.
-  for (let i = runs.length - 1; i >= 0; i--) {
+  // Render newest at the top — the rider's eye lands there first. Show
+  // a "#1" label on the newest, "#2" on the next, etc. so the rider can
+  // quickly count back through the session.
+  const total = runs.length;
+  for (let i = total - 1; i >= 0; i--) {
     const r = runs[i];
+    const isBest = r.elapsed === best;
+    const recencyRank = total - i; // 1 = newest
     const row = document.createElement('div');
-    row.className = 'row' + (r.elapsed === best ? ' best' : '');
-    row.textContent = `${r.elapsed.toFixed(3)}s`;
+    row.className = 'row' + (isBest ? ' best' : '');
+    const rankSpan = document.createElement('span');
+    rankSpan.className = 'rank';
+    rankSpan.textContent = `#${recencyRank}`;
+    const timeSpan = document.createElement('span');
+    timeSpan.className = 'time';
+    timeSpan.textContent = `${r.elapsed.toFixed(3)}s`;
+    row.appendChild(rankSpan);
+    row.appendChild(timeSpan);
     els.history.appendChild(row);
   }
 }
@@ -717,6 +731,36 @@ function renderHistory() {
 // Render any persisted history before the first frame so the rider sees
 // previous results immediately on a fresh page load.
 renderHistory();
+
+/* ------------------------------------------------------------------ *
+ * Build stamp — top-right corner.                                     *
+ *                                                                     *
+ * BUILD_INFO is rewritten by CI on the GitHub Pages deploy step       *
+ * (see decisions/004 + the deploy workflow). Locally everything is    *
+ * null / "gymkhana-local" so we fall back to the page-load timestamp  *
+ * — a fresh dev iteration produces a fresh stamp on every live-reload,*
+ * and the user can correlate a screenshot with the moment they tested.*
+ * ------------------------------------------------------------------ */
+function pad2(n) { return String(n).padStart(2, '0'); }
+function formatBuildStamp() {
+  const v = String(BUILD_INFO.version || '').trim();
+  const at = BUILD_INFO.builtAt;
+  const isLocal = !at || /^gymkhana-local$/i.test(v);
+  if (isLocal) {
+    const now = new Date();
+    const stamp = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())} `
+                + `${pad2(now.getHours())}:${pad2(now.getMinutes())}:${pad2(now.getSeconds())}`;
+    return `local · ${stamp}`;
+  }
+  const date = new Date(at);
+  if (!Number.isFinite(date.getTime())) return v;
+  const built = `${date.getUTCFullYear()}-${pad2(date.getUTCMonth() + 1)}-${pad2(date.getUTCDate())} `
+              + `${pad2(date.getUTCHours())}:${pad2(date.getUTCMinutes())}Z`;
+  const numeric = v.match(/(?:^|-)v?(\d+(?:\.\d+)*)$/);
+  const short = numeric ? `v${numeric[1]}` : v;
+  return `${short} · ${built}`;
+}
+els.buildStamp.textContent = formatBuildStamp();
 
 /* ------------------------------------------------------------------ *
  * Helpers                                                            *
