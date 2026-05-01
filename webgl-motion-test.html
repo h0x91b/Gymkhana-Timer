@@ -49,7 +49,7 @@
   }
   body {
     display: grid;
-    grid-template-rows: auto 1fr auto;
+    grid-template-rows: auto auto 1fr auto;
     height: 100vh;
   }
   header {
@@ -147,6 +147,7 @@
   <header>
     <h1>WebGL motion bench</h1>
     <button id="start">Start camera</button>
+    <button id="refresh" type="button" style="background:var(--warm-sand);color:var(--fg);">Hard refresh</button>
     <label>threshold
       <input id="threshold" type="range" min="0" max="0.5" step="0.005" value="0.08">
       <span id="thrVal">0.080</span>
@@ -154,6 +155,7 @@
     <span id="caps" class="pill">caps: …</span>
     <span id="err" class="err"></span>
   </header>
+  <pre id="log" style="margin:0;padding:6px 14px;background:var(--warm-sand);font-family:var(--font-mono);font-size:11px;line-height:1.4;color:var(--fg);max-height:120px;overflow:auto;white-space:pre-wrap;"></pre>
   <main>
     <video id="video" playsinline muted autoplay></video>
     <canvas id="display"></canvas>
@@ -193,6 +195,90 @@
   </footer>
 
 <script type="module">
+/* --------------------------------------------------------------------- *
+ * Hard-refresh button                                                   *
+ *                                                                       *
+ * The main app's service worker (sw.js) intercepts every GET on this    *
+ * origin via `caches.match(req) || fetch(req)`. webgl-motion-test.html  *
+ * isn't in its precache list, so a fetch should pass through — but in   *
+ * pathological states (offline mode entered earlier, stale waiting SW,  *
+ * a runtime cache populated by some other code path) the bench can end  *
+ * up served from a stale cache. This button nukes every SW cache,       *
+ * unregisters every SW on this origin, and reloads with a cache-buster  *
+ * query so even the HTTP cache cannot win. Wired up FIRST, before any   *
+ * other init runs, so it's always usable even if the rest of the page   *
+ * later throws.                                                         *
+ * ------------------------------------------------------------------- */
+document.getElementById('refresh').addEventListener('click', async () => {
+  const btn = document.getElementById('refresh');
+  btn.disabled = true;
+  btn.textContent = 'refreshing…';
+  try {
+    if ('caches' in self) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    }
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.unregister()));
+    }
+  } catch (_) {
+    // Ignore — we still want to reload even if the cleanup partially failed.
+  }
+  // Cache-bust the URL itself. location.reload(true) is a no-op on
+  // modern Chromium (forceReload was removed); a query change forces
+  // a fresh HTTP fetch.
+  const u = new URL(location.href);
+  u.searchParams.set('nocache', String(Date.now()));
+  location.replace(u.toString());
+});
+
+/* --------------------------------------------------------------------- *
+ * Global error surfacing                                                *
+ *                                                                       *
+ * Without this, a failure on a quirky device (Xiaomi MIUI WebView,      *
+ * Samsung Browser, older Android Chromes) typically produces a black    *
+ * screen and nothing useful in the UI — the page caught no exception,   *
+ * so its visible state never updated, and the rider has no way to       *
+ * tell us what broke. We forward every unhandled error AND every        *
+ * unhandled promise rejection to the on-page error label and an alert,  *
+ * so a single screenshot tells us the message + filename + line.        *
+ * ------------------------------------------------------------------- */
+function reportError(scope, err) {
+  const msg = (err && (err.stack || err.message)) || String(err);
+  const text = `[${scope}] ${msg}`;
+  const el = document.getElementById('err');
+  if (el) el.textContent = text;
+  // Use a microtask so the DOM update lands before the alert blocks paint.
+  Promise.resolve().then(() => {
+    try { alert(text); } catch (_) { /* alerts can be blocked in fullscreen PWAs */ }
+  });
+  // Also keep it in console for desktop debugging.
+  console.error(text);
+}
+window.addEventListener('error', (ev) => {
+  reportError('window.error', ev.error || ev.message);
+});
+window.addEventListener('unhandledrejection', (ev) => {
+  reportError('unhandledrejection', ev.reason);
+});
+
+/* --------------------------------------------------------------------- *
+ * Log helper. Every interesting milestone goes through here so a phone  *
+ * screenshot of the log panel is enough to understand what happened.    *
+ * Non-blocking: we never gate control flow on a log event firing.       *
+ * ------------------------------------------------------------------- */
+const logEl = document.getElementById('log');
+function logLine(...parts) {
+  const t = new Date().toISOString().slice(11, 23);
+  const line = `${t}  ${parts.join(' ')}`;
+  if (logEl) {
+    logEl.textContent += line + '\n';
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  console.log(line);
+}
+
 /* --------------------------------------------------------------------- *
  * Constants                                                             *
  * --------------------------------------------------------------------- */
@@ -420,10 +506,36 @@ gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 /* --------------------------------------------------------------------- *
  * Camera                                                                *
  * --------------------------------------------------------------------- */
+// startCamera mirrors the very first (working) version of this page
+// EXACTLY. No timeouts, no watchdogs, no flags around rVFC. Earlier
+// commits added "diagnostics" that subtly changed the control flow
+// (early-bailing on play(), gating rVFC re-arm on a flag) and broke
+// devices that worked perfectly fine before. The only additions kept
+// from the diagnostic experiments are non-invasive: event listeners
+// for log lines, and the global error reporter.
 async function startCamera() {
   btnStart.disabled = true;
   btnStart.textContent = 'starting…';
+  logLine('UA:', navigator.userAgent);
+  logLine('rVFC supported:', 'requestVideoFrameCallback' in HTMLVideoElement.prototype);
+
+  // Diagnostic event listeners — registered before srcObject so we
+  // never miss the first event. They only log; they never block.
+  video.addEventListener('loadedmetadata', () => {
+    logLine('event loadedmetadata:', video.videoWidth + '×' + video.videoHeight);
+  }, { once: true });
+  video.addEventListener('loadeddata', () => {
+    logLine('event loadeddata: readyState=' + video.readyState);
+  }, { once: true });
+  video.addEventListener('playing', () => {
+    logLine('event playing');
+  }, { once: true });
+  video.addEventListener('error', () => {
+    logLine('event video error: code=' + (video.error && video.error.code));
+  });
+
   try {
+    logLine('getUserMedia: requesting…');
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: false,
       video: {
@@ -433,22 +545,37 @@ async function startCamera() {
         height: { ideal: 720 },
       },
     });
+    const track = stream.getVideoTracks()[0];
+    const settings = track ? track.getSettings() : {};
+    logLine('getUserMedia: ok', JSON.stringify({
+      label: track && track.label,
+      w: settings.width, h: settings.height,
+      fps: settings.frameRate, facing: settings.facingMode,
+    }));
+
     video.srcObject = stream;
+    logLine('video.play(): calling…');
     await video.play();
+    logLine('video.play(): resolved, videoWidth=' + video.videoWidth);
     btnStart.textContent = 'running';
-    requestAnimationFrame(loopOnce); // first paint happens via rVFC below
+
+    // Same as first-commit version: rVFC if available, plain rAF otherwise.
+    // No flags, no watchdog gates — onFrame re-arms itself unconditionally.
     if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+      logLine('frame loop: rVFC');
       video.requestVideoFrameCallback(onFrame);
     } else {
-      // Fallback: rAF (less precise timing but works on Firefox <130).
-      const tick = () => { onFrame(performance.now(), { mediaTime: performance.now() / 1000 }); requestAnimationFrame(tick); };
+      logLine('frame loop: rAF fallback');
+      const tick = () => {
+        onFrame(performance.now(), { mediaTime: performance.now() / 1000 });
+        requestAnimationFrame(tick);
+      };
       requestAnimationFrame(tick);
     }
   } catch (err) {
     btnStart.disabled = false;
     btnStart.textContent = 'Start camera';
-    errEl.textContent = String(err.message || err);
-    console.error(err);
+    reportError('startCamera', err);
   }
 }
 btnStart.addEventListener('click', startCamera);
@@ -483,8 +610,6 @@ let lastMotion = 0;
 // them — if a result isn't ready, we just keep going.
 const gpuQueryQueue = [];
 
-function loopOnce() { /* placeholder for the initial rAF kick */ }
-
 function resizeDisplay() {
   const w = canvas.clientWidth | 0;
   const h = canvas.clientHeight | 0;
@@ -500,9 +625,28 @@ thrEl.addEventListener('input', () => {
 });
 
 function onFrame(_now, metadata) {
+  // requestVideoFrameCallback swallows any thrown exception silently
+  // (the spec discards it), so without this wrapper a quirky-device
+  // failure ends in a frozen black screen with zero diagnostics.
+  try {
+    onFrameImpl(_now, metadata);
+  } catch (err) {
+    reportError('onFrame', err);
+  }
+}
+let firstFrameLogged = false;
+function onFrameImpl(_now, metadata) {
   if (!video.videoWidth) {
+    // Match the first-commit behaviour: unconditionally re-arm rVFC.
+    // The rAF fallback path overwrites onFrame's caller (it doesn't go
+    // through rVFC at all), so this re-arm is a no-op in that case.
     video.requestVideoFrameCallback(onFrame);
     return;
+  }
+  if (!firstFrameLogged) {
+    firstFrameLogged = true;
+    logLine('first frame:', video.videoWidth + '×' + video.videoHeight,
+      'mediaTime=' + (metadata.mediaTime || 0).toFixed(3));
   }
   const VW = video.videoWidth;
   const VH = video.videoHeight;
@@ -655,7 +799,13 @@ function onFrame(_now, metadata) {
     renderMetrics();
   }
 
-  video.requestVideoFrameCallback(onFrame);
+  // Unconditional re-arm — same as the first-commit version. If the
+  // page is on the rAF path (rVFC missing on the prototype) this call
+  // would throw; we don't reach here in that case because the rAF tick
+  // calls onFrame separately and rVFC isn't installed at all.
+  if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+    video.requestVideoFrameCallback(onFrame);
+  }
 }
 
 /* --------------------------------------------------------------------- *
