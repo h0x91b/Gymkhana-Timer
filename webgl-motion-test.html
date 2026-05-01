@@ -148,6 +148,7 @@
     <h1>WebGL motion bench</h1>
     <button id="start">Start camera</button>
     <button id="refresh" type="button" style="background:var(--warm-sand);color:var(--fg);">Hard refresh</button>
+    <button id="toggleLog" type="button" style="background:var(--warm-sand);color:var(--fg);">Log</button>
     <label>threshold
       <input id="threshold" type="range" min="0" max="0.5" step="0.005" value="0.08">
       <span id="thrVal">0.080</span>
@@ -155,7 +156,7 @@
     <span id="caps" class="pill">caps: …</span>
     <span id="err" class="err"></span>
   </header>
-  <pre id="log" style="margin:0;padding:6px 14px;background:var(--warm-sand);font-family:var(--font-mono);font-size:11px;line-height:1.4;color:var(--fg);max-height:120px;overflow:auto;white-space:pre-wrap;"></pre>
+  <pre id="log" hidden style="margin:0;padding:6px 14px;background:var(--warm-sand);font-family:var(--font-mono);font-size:11px;line-height:1.4;color:var(--fg);max-height:120px;overflow:auto;white-space:pre-wrap;"></pre>
   <main>
     <video id="video" playsinline muted autoplay></video>
     <canvas id="display"></canvas>
@@ -209,6 +210,11 @@
  * other init runs, so it's always usable even if the rest of the page   *
  * later throws.                                                         *
  * ------------------------------------------------------------------- */
+document.getElementById('toggleLog').addEventListener('click', () => {
+  const el = document.getElementById('log');
+  el.hidden = !el.hidden;
+});
+
 document.getElementById('refresh').addEventListener('click', async () => {
   const btn = document.getElementById('refresh');
   btn.disabled = true;
@@ -506,6 +512,25 @@ gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 /* --------------------------------------------------------------------- *
  * Camera                                                                *
  * --------------------------------------------------------------------- */
+// Camera constraints reused by both the initial start and the recovery
+// path that re-acquires the stream after Android backgrounds the tab
+// and ends the original tracks.
+const CAMERA_CONSTRAINTS = {
+  audio: false,
+  video: {
+    facingMode: 'environment',
+    frameRate: { ideal: 60 },
+    width: { ideal: 1280 },
+    height: { ideal: 720 },
+  },
+};
+
+// Module-scope state used by recover(). currentStream lets us stop the
+// previous stream's tracks before swapping in a new one; cameraStarted
+// gates recovery so it never runs before the user has hit Start.
+let currentStream = null;
+let cameraStarted = false;
+
 // startCamera mirrors the very first (working) version of this page
 // EXACTLY. No timeouts, no watchdogs, no flags around rVFC. Earlier
 // commits added "diagnostics" that subtly changed the control flow
@@ -536,15 +561,7 @@ async function startCamera() {
 
   try {
     logLine('getUserMedia: requesting…');
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: {
-        facingMode: 'environment',
-        frameRate: { ideal: 60 },
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
-      },
-    });
+    const stream = await navigator.mediaDevices.getUserMedia(CAMERA_CONSTRAINTS);
     const track = stream.getVideoTracks()[0];
     const settings = track ? track.getSettings() : {};
     logLine('getUserMedia: ok', JSON.stringify({
@@ -552,12 +569,15 @@ async function startCamera() {
       w: settings.width, h: settings.height,
       fps: settings.frameRate, facing: settings.facingMode,
     }));
+    currentStream = stream;
+    attachTrackListeners(stream);
 
     video.srcObject = stream;
     logLine('video.play(): calling…');
     await video.play();
     logLine('video.play(): resolved, videoWidth=' + video.videoWidth);
     btnStart.textContent = 'running';
+    cameraStarted = true;
 
     // Same as first-commit version: rVFC if available, plain rAF otherwise.
     // No flags, no watchdog gates — onFrame re-arms itself unconditionally.
@@ -885,6 +905,146 @@ function renderMetrics() {
   m.motion.textContent = lastMotion.toFixed(3);
   m.n.textContent = String(sampleCount);
 }
+
+/* --------------------------------------------------------------------- *
+ * Recovery after backgrounding                                          *
+ *                                                                       *
+ * Reported symptom: opening the page works on first load but after the  *
+ * tab is backgrounded (Alt-Tab, lock screen, switching apps) the camera *
+ * never comes back. Three independent root causes are possible on       *
+ * Android Chrome and we defend against all of them here:                *
+ *                                                                       *
+ *   1. MediaStreamTrack ends. Chrome on Android may auto-stop video     *
+ *      tracks while the tab is hidden to release the camera. On         *
+ *      visibility return the existing track stays in readyState=ended   *
+ *      forever; calling play() does nothing, the video is dead.         *
+ *      → On track 'ended' OR on visibility return with an ended track,  *
+ *        re-acquire the stream via getUserMedia(CAMERA_CONSTRAINTS),    *
+ *        swap srcObject, and play() again.                              *
+ *                                                                       *
+ *   2. WebGL context is lost. Android Chrome aggressively releases GPU  *
+ *      contexts in the background. Without listeners, all subsequent    *
+ *      texImage2D / drawArrays / readPixels calls silently no-op while  *
+ *      reporting wrong values, which looks identical to "camera dead".  *
+ *      → preventDefault() the loss event so the browser tries to        *
+ *        restore. If it isn't restored within 2s we location.reload()   *
+ *        — re-creating every program / texture / FBO / VAO from scratch *
+ *        is significant work and a clean reload is more reliable.       *
+ *                                                                       *
+ *   3. video.paused becomes true and rVFC stops firing. Some Android    *
+ *      stacks pause the video on hide and never resume even when tracks *
+ *      are still live.                                                  *
+ *      → On visibility return, if track is alive but video.paused, call *
+ *        play() and re-arm rVFC for safety.                             *
+ *                                                                       *
+ * Recovery never runs before the user has hit Start (cameraStarted gate).*
+ * Every action is logged so a screenshot of the Log panel reveals which *
+ * branch fired.                                                         *
+ * ------------------------------------------------------------------- */
+function attachTrackListeners(stream) {
+  for (const track of stream.getVideoTracks()) {
+    track.addEventListener('ended', () => {
+      logLine('track ended: ' + track.label);
+      if (document.visibilityState === 'visible') recover();
+    });
+    track.addEventListener('mute', () => logLine('track muted'));
+    track.addEventListener('unmute', () => logLine('track unmuted'));
+  }
+}
+
+let recovering = false;
+async function recover() {
+  if (!cameraStarted) return;
+  if (recovering) return;
+  recovering = true;
+  try {
+    logLine('recover: visibility=' + document.visibilityState
+      + ' paused=' + video.paused
+      + ' readyState=' + video.readyState
+      + ' contextLost=' + gl.isContextLost());
+
+    if (gl.isContextLost()) {
+      logLine('recover: WebGL context lost — waiting for restore');
+      // The webglcontextlost listener has its own watchdog; nothing to
+      // do here. Don't touch the stream — leave that to a fresh load.
+      return;
+    }
+
+    // Track liveness check. If the track is gone or ended we MUST
+    // re-acquire — playing a dead stream produces a black frame forever.
+    const track = currentStream && currentStream.getVideoTracks()[0];
+    if (!track || track.readyState === 'ended') {
+      logLine('recover: re-acquiring stream (track '
+        + (track ? 'ended' : 'missing') + ')');
+      // Drop the old stream's tracks before requesting a new one — some
+      // Android stacks refuse the second getUserMedia until previous
+      // tracks are stopped.
+      if (currentStream) {
+        for (const t of currentStream.getTracks()) {
+          try { t.stop(); } catch (_) {}
+        }
+      }
+      try {
+        const fresh = await navigator.mediaDevices.getUserMedia(CAMERA_CONSTRAINTS);
+        currentStream = fresh;
+        attachTrackListeners(fresh);
+        video.srcObject = fresh;
+        await video.play();
+        logLine('recover: stream restored, videoWidth=' + video.videoWidth);
+        if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+          video.requestVideoFrameCallback(onFrame);
+        }
+      } catch (err) {
+        reportError('recover.getUserMedia', err);
+      }
+      return;
+    }
+
+    // Track is alive — make sure video is playing and rVFC is re-armed.
+    if (video.paused) {
+      logLine('recover: video paused, calling play()');
+      try {
+        await video.play();
+        logLine('recover: play() resolved');
+      } catch (err) {
+        logLine('recover: play() rejected: ' + (err.message || err));
+      }
+    }
+    if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+      // Cheap and idempotent — duplicate registrations are deduplicated
+      // by the spec; this just guarantees we have at least one pending.
+      video.requestVideoFrameCallback(onFrame);
+    }
+  } finally {
+    recovering = false;
+  }
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') recover();
+});
+
+// WebGL context-loss listeners. These attach to the canvas, not the
+// gl object — context-loss events fire on the HTMLCanvasElement.
+canvas.addEventListener('webglcontextlost', (ev) => {
+  // preventDefault signals to the browser we'd like the context back;
+  // without it the context is permanently dead.
+  ev.preventDefault();
+  logLine('!! webglcontextlost — preventDefault, awaiting restore');
+  setTimeout(() => {
+    if (gl.isContextLost()) {
+      logLine('!! context not restored in 2s — reloading');
+      location.reload();
+    }
+  }, 2000);
+});
+canvas.addEventListener('webglcontextrestored', () => {
+  // Re-creating every program, texture, FBO, VAO is a non-trivial
+  // refactor (everything was created at top-level const). A clean
+  // reload reuses the simpler init path and is reliable.
+  logLine('webglcontextrestored — reloading to reinit GL resources');
+  location.reload();
+});
 </script>
 </body>
 </html>
