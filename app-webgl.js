@@ -27,8 +27,12 @@ import { WebglDetector } from './webgl-detector.js';
  * URL parameters and tunables                                        *
  * ------------------------------------------------------------------ */
 const URL_PARAMS = new URL(location.href).searchParams;
-const DEBUG = URL_PARAMS.get('debug') === '1';
-const THRESHOLD = clampNumber(parseFloat(URL_PARAMS.get('thr')), 0.20, 0.01, 0.95);
+// Debug overlay is ON by default — the rider needs to see ratio, FPS,
+// and threshold while tuning. Use ?debug=0 to hide it.
+const DEBUG = URL_PARAMS.get('debug') !== '0';
+const INITIAL_THRESHOLD = clampNumber(parseFloat(URL_PARAMS.get('thr')), 0.20, 0.05, 0.80);
+const HISTORY_KEY = 'gymkhana-webgl-history';
+const HISTORY_MAX = 10;
 
 const STATE = Object.freeze({
   IDLE: 'IDLE',
@@ -133,6 +137,9 @@ const els = {
   topbar:       document.getElementById('topbar'),
   btnStart:     document.getElementById('btn-start-camera'),
   btnSetRoi:    document.getElementById('btn-set-roi'),
+  threshold:    document.getElementById('threshold'),
+  thrVal:       document.getElementById('thr-val'),
+  history:      document.getElementById('history'),
   debug:        document.getElementById('debug'),
 };
 
@@ -146,7 +153,19 @@ viewport.attach();
 const timer = new Timer(els.timer);
 const detector = new WebglDetector(els.display);
 detector.init();
-detector.setThreshold(THRESHOLD);
+
+// Threshold slider — bound to detector. URL param ?thr= seeds the
+// initial value; the slider is the live source of truth from there on.
+let currentThreshold = INITIAL_THRESHOLD;
+els.threshold.value = String(currentThreshold);
+els.thrVal.textContent = currentThreshold.toFixed(2);
+detector.setThreshold(currentThreshold);
+els.threshold.addEventListener('input', () => {
+  const v = clampNumber(parseFloat(els.threshold.value), currentThreshold, 0.05, 0.95);
+  currentThreshold = v;
+  els.thrVal.textContent = v.toFixed(2);
+  detector.setThreshold(v);
+});
 
 /* ------------------------------------------------------------------ *
  * Session state                                                      *
@@ -214,6 +233,8 @@ function enterFinished(elapsed, mt) {
   // phrasing matches canvas-app for muscle memory.
   timer.speak(`finish, ${elapsed.toFixed(2)} seconds`);
   finishedFlashUntil = mt + FINISHED_FLASH;
+  pushHistory(elapsed);
+  renderHistory();
   setState(STATE.FINISHED);
 }
 
@@ -227,13 +248,18 @@ function startSession() {
   if (!currentRoi) return;
   sessionActive = true;
   document.body.dataset.session = 'true';
-  // Seed the big numerals with the previous run (if any) — between runs
-  // we want the rider to compare without explicit history UI.
-  if (lastRunElapsed != null) {
+  // Seed the big numerals with the most recent run (from history if it
+  // survived a reload) so the rider sees something meaningful between
+  // sessions instead of "0.000".
+  const hist = loadHistory();
+  if (hist.length > 0) {
+    lastRunElapsed = hist[hist.length - 1].elapsed;
     timer.set(lastRunElapsed);
   } else {
+    lastRunElapsed = null;
     timer.set(0);
   }
+  renderHistory();
   enterObserving(lastFrameMediaTime);
 }
 
@@ -421,19 +447,28 @@ function recordDtSample(mt) {
   prevMediaTime = mt;
 }
 
-function medianDt() {
-  if (dtCount === 0) return 0;
-  // tiny-N median: copy then sort; FPS_WINDOW = 60 so this is cheap.
+function dtStats() {
+  if (dtCount === 0) return { median: 0, jitter: 0 };
+  // tiny-N stats: copy then sort; FPS_WINDOW = 60 so this is cheap.
   const arr = dtSamples.slice(0, dtCount);
   arr.sort();
-  return arr[(dtCount / 2) | 0];
+  const median = arr[(dtCount / 2) | 0];
+  // Half-range = (max − min) / 2. The right shape for "Δt accuracy"
+  // because the timing error contributed by frame quantization is
+  // bounded by half the slowest frame Δt.
+  const jitter = (arr[dtCount - 1] - arr[0]) / 2;
+  return { median, jitter };
 }
 
 function renderDebug() {
-  const median = medianDt();
+  const { median, jitter } = dtStats();
   const fps = median > 0 ? (1000 / median).toFixed(1) : '—';
+  // Two-line layout — top line: motion + threshold, bottom line: timing
+  // and state. Keeping it short enough to read at a glance from the
+  // tripod position.
   els.debug.textContent =
-    `${detector.debugLine()}  |  Δt=${median.toFixed(1)}ms  ${fps}fps  state=${state}`;
+    `motion=${detector.lastMotionRatio().toFixed(3)}  thr=${currentThreshold.toFixed(2)}  ratio/thr=${(detector.lastMotionRatio() / currentThreshold).toFixed(2)}\n` +
+    `${fps}fps  Δt=${median.toFixed(1)}±${jitter.toFixed(1)}ms  state=${state}  ref=${detector.hasReference() ? 'yes' : 'no'}`;
 }
 
 /* ------------------------------------------------------------------ *
@@ -496,7 +531,7 @@ function commitRoiFromReticle() {
   viewport.reset();
   currentRoi = videoRoi;
   detector.setRoi(videoRoi);
-  detector.setThreshold(THRESHOLD);
+  detector.setThreshold(currentThreshold);
   startSession();
 }
 
@@ -611,9 +646,15 @@ function onFrameImpl(metadata) {
  * gestures (≥2 pointers) on #viewport must NOT reveal the topbar —   *
  * that would flicker controls in/out every time the rider re-frames. *
  * ------------------------------------------------------------------ */
-document.body.addEventListener('pointerdown', () => {
+document.body.addEventListener('pointerdown', (ev) => {
   if (!sessionActive) return;
   if (viewport.isGesturing()) return;
+  // Don't toggle controls when the rider is dragging the threshold
+  // slider — the slider itself is inside #topbar; a pointerdown there
+  // means they're already interacting with controls. Re-arming the
+  // hide timer on every input event would also cause the slider to
+  // disappear mid-drag.
+  if (ev.target && ev.target.closest && ev.target.closest('#topbar')) return;
   els.topbar.classList.add('revealed');
   if (tapRevealTimer) clearTimeout(tapRevealTimer);
   tapRevealTimer = setTimeout(() => {
@@ -623,6 +664,61 @@ document.body.addEventListener('pointerdown', () => {
 });
 
 /* ------------------------------------------------------------------ *
+ * Run history (last 10 finished runs, persisted to localStorage)     *
+ *                                                                    *
+ * Stored as `gymkhana-webgl-history` = JSON array of                  *
+ * {elapsed, finishedAt} entries, oldest first. Capped at HISTORY_MAX.*
+ * Survives reloads so a rider can review their runs after a quick    *
+ * page refresh / accidental tab close.                                *
+ * ------------------------------------------------------------------ */
+function loadHistory() {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr.filter((e) => e && Number.isFinite(e.elapsed)) : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function pushHistory(elapsed) {
+  const runs = loadHistory();
+  runs.push({ elapsed, finishedAt: Date.now() });
+  // Trim from the front so we keep the MOST RECENT HISTORY_MAX entries.
+  while (runs.length > HISTORY_MAX) runs.shift();
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(runs));
+  } catch (err) {
+    // Quota exceeded / private mode — log and continue. The in-memory
+    // copy is still good for rendering this session.
+    logLine('history.save failed: ' + (err.message || err));
+  }
+}
+
+function renderHistory() {
+  const runs = loadHistory();
+  els.history.innerHTML = '';
+  if (runs.length === 0) return;
+  // Best (smallest) elapsed gets a highlighted row so the rider can
+  // tell at a glance whether the most recent run beat their PB.
+  let best = Infinity;
+  for (const r of runs) if (r.elapsed < best) best = r.elapsed;
+  // Render newest at the top — the rider's eye lands there first.
+  for (let i = runs.length - 1; i >= 0; i--) {
+    const r = runs[i];
+    const row = document.createElement('div');
+    row.className = 'row' + (r.elapsed === best ? ' best' : '');
+    row.textContent = `${r.elapsed.toFixed(3)}s`;
+    els.history.appendChild(row);
+  }
+}
+
+// Render any persisted history before the first frame so the rider sees
+// previous results immediately on a fresh page load.
+renderHistory();
+
+/* ------------------------------------------------------------------ *
  * Helpers                                                            *
  * ------------------------------------------------------------------ */
 function clampNumber(v, fallback, min, max) {
@@ -630,4 +726,4 @@ function clampNumber(v, fallback, min, max) {
   return Math.max(min, Math.min(max, v));
 }
 
-logLine('app-webgl boot. threshold=' + THRESHOLD.toFixed(3) + ' debug=' + DEBUG);
+logLine('app-webgl boot. threshold=' + INITIAL_THRESHOLD.toFixed(3) + ' debug=' + DEBUG);

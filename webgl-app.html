@@ -107,7 +107,15 @@
   #timer {
     font-family: ui-serif, Georgia, "Times New Roman", serif;
     font-weight: 500;
-    font-size: clamp(160px, 38vh, 480px);
+    /* Size has to fit BOTH height and width — on a vertical phone the
+       width is what limits us. "42.123" is six tabular-num glyphs, each
+       roughly 0.55em wide, so the text occupies ~3.3em horizontally.
+       min(46vh, 22vw) keeps the digits inside ~72% of the narrowest
+       dimension on every realistic aspect ratio (portrait phone,
+       landscape desktop, square tablet). Without the vw clamp the
+       digits overflow and only the middle two are visible — exactly
+       the bug the user reported. */
+    font-size: min(46vh, 22vw);
     line-height: 1;
     font-variant-numeric: tabular-nums;
     color: #1a1a1a;
@@ -115,14 +123,20 @@
       0 0 18px rgba(255, 255, 255, 0.45),
       0 2px 0 rgba(255, 255, 255, 0.25);
     letter-spacing: -0.02em;
+    max-width: 96vw;
+    overflow: hidden;
+    white-space: nowrap;
+    text-align: center;
   }
   #subline {
     margin-top: 1.2vh;
-    font-size: clamp(20px, 3.6vh, 44px);
+    font-size: clamp(16px, min(3.4vh, 4.6vw), 44px);
     font-weight: 500;
     color: #1a1a1a;
     text-shadow: 0 0 10px rgba(255, 255, 255, 0.55);
     min-height: 1.2em;
+    max-width: 96vw;
+    text-align: center;
   }
   #cooldown {
     margin-top: 1.2vh;
@@ -193,6 +207,55 @@
     opacity: 0.45;
     cursor: default;
   }
+  #topbar label.threshold {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: #f5f4ed;
+    background: rgba(0, 0, 0, 0.4);
+    padding: 6px 10px;
+    border-radius: 10px;
+  }
+  #topbar label.threshold input {
+    width: 110px;
+  }
+  #thr-val {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    min-width: 3.5em;
+    text-align: right;
+  }
+
+  /* Run history — last 10 runs shown bottom-right while a session is
+     live. Compact, monospaced so the digits line up; the most recent
+     run sits on top. Hidden until at least one run has finished. */
+  #history {
+    position: fixed;
+    right: 8px;
+    bottom: 8px;
+    z-index: 4;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12px;
+    color: #1a1a1a;
+    pointer-events: none;
+    text-align: right;
+  }
+  #history:empty { display: none; }
+  #history .row {
+    background: rgba(245, 244, 237, 0.78);
+    padding: 2px 8px;
+    border-radius: 6px;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.15);
+    font-variant-numeric: tabular-nums;
+  }
+  #history .row.best {
+    background: rgba(0, 216, 81, 0.85);
+    color: #0b0b0c;
+    font-weight: 600;
+  }
 
   /* Log panel + on-page error label — bench-style, hidden by default. */
   #log {
@@ -230,20 +293,23 @@
   }
   #err:empty { display: none; }
 
-  /* Debug overlay — opt-in via ?debug=1. Tucked at the bottom so it
-     never collides with the timer. */
+  /* Debug overlay — visible by default (the rider needs FPS, motion
+     ratio, and threshold readouts to tune). Hide with ?debug=0. */
   #debug {
     position: fixed;
     left: 8px;
     bottom: 8px;
     z-index: 4;
     font-family: ui-monospace, Menlo, Consolas, monospace;
-    font-size: 11px;
+    font-size: 12px;
+    line-height: 1.45;
     color: #f5f4ed;
-    background: rgba(0,0,0,0.55);
-    padding: 4px 8px;
-    border-radius: 6px;
+    background: rgba(0,0,0,0.62);
+    padding: 6px 10px;
+    border-radius: 8px;
     pointer-events: none;
+    max-width: 60vw;
+    white-space: pre;
     display: none;
   }
   body[data-debug="true"] #debug { display: block; }
@@ -275,10 +341,20 @@
   <header id="topbar">
     <button id="btn-start-camera" type="button" class="primary">Start camera</button>
     <button id="btn-set-roi" type="button" disabled>Confirm ROI</button>
+    <label class="threshold">thr
+      <input id="threshold" type="range" min="0.05" max="0.80" step="0.01" value="0.20">
+      <span id="thr-val">0.20</span>
+    </label>
     <button id="btn-toggle-log" type="button">Log</button>
   </header>
   <pre id="log" hidden></pre>
   <span id="err"></span>
+
+  <!-- Last 10 finished runs, most recent at top. Hidden until storage has
+       at least one entry. Persisted to localStorage so a reload doesn't
+       lose the rider's session results. -->
+  <div id="history"></div>
+
   <div id="debug">—</div>
 
   <script type="module" src="./app-webgl.js"></script>
